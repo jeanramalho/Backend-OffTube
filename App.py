@@ -40,7 +40,8 @@ def download_video():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
-@app.route("/videos/<filename>")
+# ✅ Servindo vídeos da pasta 'videos/'
+@app.route("/videos/<path:filename>")
 def serve_video(filename):
     return send_from_directory(DOWNLOAD_FOLDER, filename)
 
