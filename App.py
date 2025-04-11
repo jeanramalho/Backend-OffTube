@@ -3,6 +3,7 @@ from flask_cors import CORS
 import os
 import uuid
 import subprocess
+import tempfile
 
 app = Flask(__name__)
 CORS(app)
@@ -27,28 +28,60 @@ def download_video():
         print(f"[INFO] Baixando vídeo: {url}")
         print(f"[INFO] Caminho de saída: {output_template}")
 
-        result = subprocess.run([
-            "yt-dlp",
-            "--cookies", "cookies.txt",
-            "-f", "bestvideo+bestaudio",
-            "-o", output_template,
-            url
-        ], capture_output=True, text=True)
+        # Criar arquivo temporário de cookies a partir da variável de ambiente
+        cookies_content = os.environ.get("YOUTUBE_COOKIES", "")
+        
+        if not cookies_content:
+            print("[AVISO] Variável de ambiente YOUTUBE_COOKIES não encontrada")
+            return jsonify({"error": "Cookies do YouTube não configurados no servidor"}), 500
+            
+        # Criar arquivo temporário para armazenar os cookies
+        temp_cookies_path = None
+        try:
+            with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.txt') as temp_cookies:
+                temp_cookies.write(cookies_content)
+                temp_cookies_path = temp_cookies.name
+            
+            print(f"[INFO] Arquivo temporário de cookies criado em: {temp_cookies_path}")
+            
+            result = subprocess.run([
+                "yt-dlp",
+                "--cookies", temp_cookies_path,
+                "-f", "bestvideo+bestaudio",
+                "--merge-output-format", "mp4",  # Garante saída em mp4
+                "-o", output_template,
+                url
+            ], capture_output=True, text=True)
 
-        print("[STDOUT]", result.stdout)
-        print("[STDERR]", result.stderr)
+            print("[STDOUT]", result.stdout)
+            print("[STDERR]", result.stderr)
+            
+            # Remover o arquivo temporário de cookies após o uso
+            if os.path.exists(temp_cookies_path):
+                os.unlink(temp_cookies_path)
+                print("[INFO] Arquivo temporário de cookies removido")
+                temp_cookies_path = None
 
-        if result.returncode != 0:
-            return jsonify({"error": result.stderr}), 500
+            if result.returncode != 0:
+                return jsonify({"error": result.stderr}), 500
 
-        # Após o download, identifica o arquivo salvo
-        for filename in os.listdir(DOWNLOAD_FOLDER):
-            if filename.startswith(video_id):
-                return jsonify({"url": f"/videos/{filename}"})
+            # Após o download, identifica o arquivo salvo
+            saved_files = [f for f in os.listdir(DOWNLOAD_FOLDER) if f.startswith(video_id)]
+            
+            if not saved_files:
+                return jsonify({"error": "Arquivo não encontrado após download"}), 500
+                
+            print(f"[INFO] Vídeo baixado com sucesso: {saved_files[0]}")
+            return jsonify({"url": f"/videos/{saved_files[0]}"})
 
-        return jsonify({"error": "Arquivo não encontrado após download"}), 500
+        finally:
+            # Garantir que o arquivo temporário seja removido em caso de erro
+            if temp_cookies_path and os.path.exists(temp_cookies_path):
+                os.unlink(temp_cookies_path)
+                print("[INFO] Arquivo temporário de cookies removido (finally)")
 
     except Exception as e:
+        print(f"[ERRO] {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 # Servir os vídeos
@@ -59,7 +92,19 @@ def serve_video(filename):
 # Listar os vídeos existentes
 @app.route("/listar")
 def listar_videos():
-    return jsonify(os.listdir(DOWNLOAD_FOLDER))
+    videos = os.listdir(DOWNLOAD_FOLDER)
+    return jsonify(videos)
+
+# Verificar status da API
+@app.route("/status")
+def status():
+    return jsonify({
+        "status": "online",
+        "videos_count": len(os.listdir(DOWNLOAD_FOLDER)),
+        "cookies_configured": bool(os.environ.get("YOUTUBE_COOKIES"))
+    })
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)), debug=True)
+    port = int(os.environ.get("PORT", 10000))
+    print(f"[INFO] Iniciando servidor na porta {port}")
+    app.run(host="0.0.0.0", port=port, debug=True)
