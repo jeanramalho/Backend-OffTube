@@ -45,9 +45,10 @@ def download_video():
 def serve_video(filename):
     return send_from_directory(DOWNLOAD_FOLDER, filename)
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)), debug=True)
-
 @app.route("/listar")
 def listar_videos():
     return jsonify(os.listdir(DOWNLOAD_FOLDER))
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)), debug=True)
+
