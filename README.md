@@ -6,7 +6,7 @@
 
 ## 🚀 Visão Geral
 
-O OffTube nasceu como parte de um app pessoal iOS, com o objetivo de facilitar o download e reprodução offline de vídeos do YouTube, respeitando os termos de uso e com foco educacional e experimental.
+O OffTube nasceu como parte de um app pessoal iOS, com o objetivo de facilitar o download e reprodução offline de vídeos do YouTube, respeitando os termos de uso e com foco experimental.
 
 Com apenas uma requisição POST, a API retorna um arquivo `.mp4` pronto para ser usado em qualquer player ou integração.
 
