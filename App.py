@@ -104,6 +104,22 @@ def status():
         "cookies_configured": bool(os.environ.get("YOUTUBE_COOKIES"))
     })
 
+@app.route("/videos/<filename>", methods=["DELETE"])
+def delete_video(filename):
+    file_path = os.path.join(DOWNLOAD_FOLDER, filename)
+
+    if not os.path.exists(file_path):
+        return jsonify({"error": "Arquivo não encontrado"}), 404
+
+    try:
+        os.remove(file_path)
+        print(f"[INFO] Vídeo {filename} removido com sucesso.")
+        return jsonify({"message": "Vídeo removido com sucesso"}), 200
+    except Exception as e:
+        print(f"[ERRO] Falha ao remover {filename}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 10000))
     print(f"[INFO] Iniciando servidor na porta {port}")
