@@ -104,13 +104,5 @@ Desenvolvido por [Jean Ramalho](https://www.linkedin.com/in/jean-ramalho/), dese
 
 ---
 
-## 🧪 Próximos passos
-
-- [ ] Deploy gratuito com Render
-- [ ] Suporte a outros formatos (apenas áudio, resolução específica)
-- [ ] Autenticação básica para controle de acesso
-- [ ] Limpeza automática dos arquivos antigos
-
----
 
 > **Disclaimer:** Este projeto é para fins educacionais e pessoais. Respeite sempre os termos de uso e direitos autorais das plataformas.
