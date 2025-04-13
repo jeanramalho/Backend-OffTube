@@ -4,6 +4,8 @@ import os
 import uuid
 import subprocess
 import tempfile
+import json
+import re
 
 app = Flask(__name__)
 CORS(app)
@@ -11,6 +13,10 @@ CORS(app)
 # Pasta onde os vídeos serão salvos
 DOWNLOAD_FOLDER = os.path.join(os.getcwd(), "videos")
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
+
+# Pasta para thumbnails
+THUMBNAIL_FOLDER = os.path.join(os.getcwd(), "thumbnails")
+os.makedirs(THUMBNAIL_FOLDER, exist_ok=True)
 
 @app.route("/download", methods=["POST"])
 def download_video():
@@ -24,6 +30,9 @@ def download_video():
         video_id = str(uuid.uuid4())
         # Usa %(ext)s para deixar o yt-dlp decidir a extensão correta (ex: .webm, .mp4)
         output_template = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.%(ext)s")
+        
+        # Caminho para o thumbnail
+        thumbnail_path = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
 
         print(f"[INFO] Baixando vídeo: {url}")
         print(f"[INFO] Caminho de saída: {output_template}")
@@ -44,6 +53,39 @@ def download_video():
             
             print(f"[INFO] Arquivo temporário de cookies criado em: {temp_cookies_path}")
             
+            # Primeiro, obtenha os metadados do vídeo
+            info_result = subprocess.run([
+                "yt-dlp",
+                "--cookies", temp_cookies_path,
+                "--dump-json",
+                url
+            ], capture_output=True, text=True)
+            
+            if info_result.returncode != 0:
+                return jsonify({"error": "Erro ao obter informações do vídeo"}), 500
+                
+            video_info = json.loads(info_result.stdout)
+            video_title = video_info.get("title", "Vídeo sem título")
+            video_duration = video_info.get("duration", 0)
+            
+            # Baixe o thumbnail
+            thumbnail_result = subprocess.run([
+                "yt-dlp",
+                "--cookies", temp_cookies_path,
+                "--write-thumbnail",
+                "--skip-download",
+                "--convert-thumbnails", "jpg",
+                "-o", os.path.join(THUMBNAIL_FOLDER, f"{video_id}"),
+                url
+            ], capture_output=True, text=True)
+            
+            # Localizar o thumbnail baixado
+            thumbnail_url = None
+            thumbnails = [f for f in os.listdir(THUMBNAIL_FOLDER) if f.startswith(video_id)]
+            if thumbnails:
+                thumbnail_url = f"/thumbnails/{thumbnails[0]}"
+            
+            # Agora, baixe o vídeo
             result = subprocess.run([
                 "yt-dlp",
                 "--cookies", temp_cookies_path,
@@ -72,7 +114,14 @@ def download_video():
                 return jsonify({"error": "Arquivo não encontrado após download"}), 500
                 
             print(f"[INFO] Vídeo baixado com sucesso: {saved_files[0]}")
-            return jsonify({"url": f"/videos/{saved_files[0]}"})
+            
+            return jsonify({
+                "url": f"/videos/{saved_files[0]}",
+                "id": video_id,
+                "title": video_title,
+                "thumbnail": thumbnail_url,
+                "duration": video_duration
+            })
 
         finally:
             # Garantir que o arquivo temporário seja removido em caso de erro
@@ -88,6 +137,11 @@ def download_video():
 @app.route("/videos/<path:filename>")
 def serve_video(filename):
     return send_from_directory(DOWNLOAD_FOLDER, filename)
+
+# Servir thumbnails
+@app.route("/thumbnails/<path:filename>")
+def serve_thumbnail(filename):
+    return send_from_directory(THUMBNAIL_FOLDER, filename)
 
 # Listar os vídeos existentes
 @app.route("/listar")
