@@ -1,3 +1,23 @@
+from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS
+import os
+import uuid
+import subprocess
+import tempfile
+import json
+import re
+
+app = Flask(__name__)
+CORS(app)
+
+# Pasta onde os vídeos serão salvos
+DOWNLOAD_FOLDER = os.path.join(os.getcwd(), "videos")
+os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
+
+# Pasta para thumbnails
+THUMBNAIL_FOLDER = os.path.join(os.getcwd(), "thumbnails")
+os.makedirs(THUMBNAIL_FOLDER, exist_ok=True)
+
 @app.route("/download", methods=["POST"])
 def download_video():
     data = request.get_json()
@@ -142,3 +162,49 @@ def download_video():
     except Exception as e:
         print(f"[ERRO] {str(e)}")
         return jsonify({"error": str(e)}), 500
+
+# Servir os vídeos
+@app.route("/videos/<path:filename>")
+def serve_video(filename):
+    return send_from_directory(DOWNLOAD_FOLDER, filename)
+
+# Servir thumbnails
+@app.route("/thumbnails/<path:filename>")
+def serve_thumbnail(filename):
+    return send_from_directory(THUMBNAIL_FOLDER, filename)
+
+# Listar os vídeos existentes
+@app.route("/listar")
+def listar_videos():
+    videos = os.listdir(DOWNLOAD_FOLDER)
+    return jsonify(videos)
+
+# Verificar status da API
+@app.route("/status")
+def status():
+    return jsonify({
+        "status": "online",
+        "videos_count": len(os.listdir(DOWNLOAD_FOLDER)),
+        "cookies_configured": bool(os.environ.get("YOUTUBE_COOKIES"))
+    })
+
+@app.route("/videos/<filename>", methods=["DELETE"])
+def delete_video(filename):
+    file_path = os.path.join(DOWNLOAD_FOLDER, filename)
+
+    if not os.path.exists(file_path):
+        return jsonify({"error": "Arquivo não encontrado"}), 404
+
+    try:
+        os.remove(file_path)
+        print(f"[INFO] Vídeo {filename} removido com sucesso.")
+        return jsonify({"message": "Vídeo removido com sucesso"}), 200
+    except Exception as e:
+        print(f"[ERRO] Falha ao remover {filename}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    print(f"[INFO] Iniciando servidor na porta {port}")
+    app.run(host="0.0.0.0", port=port, debug=True)
