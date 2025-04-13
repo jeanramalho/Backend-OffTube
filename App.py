@@ -71,6 +71,10 @@ def download_video():
                                 name = parts[5]
                                 value = parts[6]
                                 
+                                # Filtrar apenas cookies do YouTube
+                                if not any(d in domain for d in ['.youtube.com', 'youtube.com']):
+                                    continue
+                                
                                 # Formatar linha no padrão Netscape
                                 # O formato é: domain, flag, path, secure, expiration, name, value
                                 # domain: deve começar com . para subdomínios
@@ -85,6 +89,10 @@ def download_video():
                                     expiration = str(int(float(expiration)))
                                 except:
                                     expiration = '0'  # Sessão
+                                
+                                # Verificar se o cookie é válido
+                                if not all([domain, path, name, value]):
+                                    continue
                                 
                                 formatted_line = f"{domain}\t{flag}\t{path}\t{secure}\t{expiration}\t{name}\t{value}\n"
                                 temp_cookies.write(formatted_line)
