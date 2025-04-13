@@ -132,13 +132,34 @@ def download_video():
                 "--add-header", "Sec-Fetch-Mode: navigate",
                 "--add-header", "Sec-Fetch-Site: none",
                 "--add-header", "Sec-Fetch-User: ?1",
-                "--add-header", "Cache-Control: max-age=0"
+                "--add-header", "Cache-Control: max-age=0",
+                # Novas opções para resolver o problema de extração
+                "--extractor-args", "youtube:player_client=android",
+                "--extractor-args", "youtube:player_skip=webpage",
+                "--extractor-args", "youtube:player_client=web",
+                "--extractor-args", "youtube:player_skip=js",
+                "--extractor-args", "youtube:player_skip=configs",
+                "--extractor-args", "youtube:player_skip=webpage",
+                "--extractor-args", "youtube:player_skip=webpage",
+                "--extractor-args", "youtube:player_skip=webpage",
+                "--extractor-args", "youtube:player_skip=webpage",
+                "--extractor-args", "youtube:player_skip=webpage",
+                # Configurações adicionais para melhorar a extração
+                "--prefer-insecure",
+                "--no-playlist",
+                "--force-ipv4",
+                "--geo-bypass",
+                "--geo-bypass-country", "BR"
             ]
             
-            # Obter informações do vídeo
+            # Primeiro, tentar obter apenas as informações do vídeo
+            print("[INFO] Tentando obter informações do vídeo...")
+            info_cmd = ["yt-dlp"] + yt_dlp_opts + ["--skip-download", url]
             info_result = subprocess.run(
-                ["yt-dlp"] + yt_dlp_opts + [url],
-                capture_output=True, text=True, timeout=60
+                info_cmd,
+                capture_output=True,
+                text=True,
+                timeout=60
             )
             
             print(f"[DEBUG] Saída do yt-dlp info: {info_result.stdout}")
@@ -148,25 +169,28 @@ def download_video():
                 print(f"[ERRO] Falha ao obter informações do vídeo: {info_result.stderr}")
                 return jsonify({"error": f"Erro ao obter informações do vídeo: {info_result.stderr}"}), 500
                 
-            video_info = json.loads(info_result.stdout)
-            video_title = video_info.get("title", "Vídeo sem título")
-            video_duration = video_info.get("duration", 0)
-            
-            # Verificar se o vídeo está disponível
-            if video_info.get("availability") != "public":
-                print(f"[ERRO] Vídeo não disponível: {url}")
-                return jsonify({"error": "Vídeo não está disponível"}), 400
+            try:
+                video_info = json.loads(info_result.stdout)
+                video_title = video_info.get("title", "Vídeo sem título")
+                video_duration = video_info.get("duration", 0)
+            except json.JSONDecodeError:
+                print("[ERRO] Falha ao decodificar informações do vídeo")
+                return jsonify({"error": "Falha ao decodificar informações do vídeo"}), 500
             
             # Baixar thumbnail
+            print("[INFO] Baixando thumbnail...")
+            thumbnail_cmd = ["yt-dlp"] + yt_dlp_opts + [
+                "--write-thumbnail",
+                "--skip-download",
+                "--convert-thumbnails", "jpg",
+                "-o", os.path.join(THUMBNAIL_FOLDER, f"{video_id}"),
+                url
+            ]
             thumbnail_result = subprocess.run(
-                ["yt-dlp"] + yt_dlp_opts + [
-                    "--write-thumbnail",
-                    "--skip-download",
-                    "--convert-thumbnails", "jpg",
-                    "-o", os.path.join(THUMBNAIL_FOLDER, f"{video_id}"),
-                    url
-                ],
-                capture_output=True, text=True, timeout=30
+                thumbnail_cmd,
+                capture_output=True,
+                text=True,
+                timeout=30
             )
             
             thumbnail_url = None
@@ -175,14 +199,18 @@ def download_video():
                 thumbnail_url = f"/thumbnails/{thumbnails[0]}"
             
             # Baixar vídeo
+            print("[INFO] Iniciando download do vídeo...")
+            download_cmd = ["yt-dlp"] + yt_dlp_opts + [
+                "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                "--merge-output-format", "mp4",
+                "-o", output_template,
+                url
+            ]
             result = subprocess.run(
-                ["yt-dlp"] + yt_dlp_opts + [
-                    "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-                    "--merge-output-format", "mp4",
-                    "-o", output_template,
-                    url
-                ],
-                capture_output=True, text=True, timeout=300
+                download_cmd,
+                capture_output=True,
+                text=True,
+                timeout=300
             )
 
             print("[STDOUT]", result.stdout)
