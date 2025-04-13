@@ -1,23 +1,3 @@
-from flask import Flask, request, jsonify, send_from_directory
-from flask_cors import CORS
-import os
-import uuid
-import subprocess
-import tempfile
-import json
-import re
-
-app = Flask(__name__)
-CORS(app)
-
-# Pasta onde os vídeos serão salvos
-DOWNLOAD_FOLDER = os.path.join(os.getcwd(), "videos")
-os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
-
-# Pasta para thumbnails
-THUMBNAIL_FOLDER = os.path.join(os.getcwd(), "thumbnails")
-os.makedirs(THUMBNAIL_FOLDER, exist_ok=True)
-
 @app.route("/download", methods=["POST"])
 def download_video():
     data = request.get_json()
@@ -48,20 +28,40 @@ def download_video():
             
         temp_cookies_path = None
         try:
+            # Criar arquivo de cookies no formato Netscape
             with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.txt') as temp_cookies:
-                temp_cookies.write(cookies_content)
+                # Converter cookies para formato Netscape
+                cookies_lines = cookies_content.split('\n')
+                for line in cookies_lines:
+                    if line.strip() and not line.startswith('#'):
+                        parts = line.split('\t')
+                        if len(parts) >= 7:
+                            # Formatar linha no padrão Netscape
+                            domain = parts[0]
+                            flag = parts[1]
+                            path = parts[2]
+                            secure = parts[3]
+                            expiration = parts[4]
+                            name = parts[5]
+                            value = parts[6]
+                            formatted_line = f"{domain}\t{flag}\t{path}\t{secure}\t{expiration}\t{name}\t{value}\n"
+                            temp_cookies.write(formatted_line)
                 temp_cookies_path = temp_cookies.name
             
             print(f"[INFO] Arquivo temporário de cookies criado em: {temp_cookies_path}")
             
-            # Obter informações do vídeo com timeout aumentado
+            # Obter informações do vídeo com configurações adicionais
             info_result = subprocess.run([
                 "yt-dlp",
                 "--cookies", temp_cookies_path,
                 "--dump-json",
-                "--socket-timeout", "30",  # Aumenta o timeout para 30 segundos
+                "--socket-timeout", "30",
+                "--retries", "10",  # Aumenta número de tentativas
+                "--fragment-retries", "10",  # Aumenta tentativas de fragmentos
+                "--extractor-retries", "10",  # Aumenta tentativas do extrator
+                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",  # User-Agent realista
                 url
-            ], capture_output=True, text=True, timeout=60)  # Timeout total de 60 segundos
+            ], capture_output=True, text=True, timeout=60)
             
             if info_result.returncode != 0:
                 print(f"[ERRO] Falha ao obter informações do vídeo: {info_result.stderr}")
@@ -83,6 +83,7 @@ def download_video():
                 "--write-thumbnail",
                 "--skip-download",
                 "--convert-thumbnails", "jpg",
+                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
                 "-o", os.path.join(THUMBNAIL_FOLDER, f"{video_id}"),
                 url
             ], capture_output=True, text=True, timeout=30)
@@ -92,16 +93,20 @@ def download_video():
             if thumbnails:
                 thumbnail_url = f"/thumbnails/{thumbnails[0]}"
             
-            # Baixar vídeo com formato específico
+            # Baixar vídeo com configurações adicionais
             result = subprocess.run([
                 "yt-dlp",
                 "--cookies", temp_cookies_path,
-                "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",  # Prioriza MP4
+                "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
                 "--merge-output-format", "mp4",
                 "--socket-timeout", "30",
+                "--retries", "10",
+                "--fragment-retries", "10",
+                "--extractor-retries", "10",
+                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
                 "-o", output_template,
                 url
-            ], capture_output=True, text=True, timeout=300)  # Timeout de 5 minutos para download
+            ], capture_output=True, text=True, timeout=300)
 
             print("[STDOUT]", result.stdout)
             print("[STDERR]", result.stderr)
@@ -137,49 +142,3 @@ def download_video():
     except Exception as e:
         print(f"[ERRO] {str(e)}")
         return jsonify({"error": str(e)}), 500
-
-# Servir os vídeos
-@app.route("/videos/<path:filename>")
-def serve_video(filename):
-    return send_from_directory(DOWNLOAD_FOLDER, filename)
-
-# Servir thumbnails
-@app.route("/thumbnails/<path:filename>")
-def serve_thumbnail(filename):
-    return send_from_directory(THUMBNAIL_FOLDER, filename)
-
-# Listar os vídeos existentes
-@app.route("/listar")
-def listar_videos():
-    videos = os.listdir(DOWNLOAD_FOLDER)
-    return jsonify(videos)
-
-# Verificar status da API
-@app.route("/status")
-def status():
-    return jsonify({
-        "status": "online",
-        "videos_count": len(os.listdir(DOWNLOAD_FOLDER)),
-        "cookies_configured": bool(os.environ.get("YOUTUBE_COOKIES"))
-    })
-
-@app.route("/videos/<filename>", methods=["DELETE"])
-def delete_video(filename):
-    file_path = os.path.join(DOWNLOAD_FOLDER, filename)
-
-    if not os.path.exists(file_path):
-        return jsonify({"error": "Arquivo não encontrado"}), 404
-
-    try:
-        os.remove(file_path)
-        print(f"[INFO] Vídeo {filename} removido com sucesso.")
-        return jsonify({"message": "Vídeo removido com sucesso"}), 200
-    except Exception as e:
-        print(f"[ERRO] Falha ao remover {filename}: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
-if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    print(f"[INFO] Iniciando servidor na porta {port}")
-    app.run(host="0.0.0.0", port=port, debug=True)
