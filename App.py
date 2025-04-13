@@ -109,9 +109,8 @@ def download_video():
                     content = f.read()
                     print(f"[DEBUG] Conteúdo do arquivo de cookies:\n{content}")
             
-            # Obter informações do vídeo
-            info_result = subprocess.run([
-                "yt-dlp",
+            # Configurações adicionais para evitar bloqueio
+            yt_dlp_opts = [
                 "--cookies", temp_cookies_path,
                 "--dump-json",
                 "--socket-timeout", "30",
@@ -119,8 +118,28 @@ def download_video():
                 "--fragment-retries", "10",
                 "--extractor-retries", "10",
                 "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-                url
-            ], capture_output=True, text=True, timeout=60)
+                "--http-chunk-size", "10M",
+                "--no-check-certificates",
+                "--no-warnings",
+                "--ignore-errors",
+                "--add-header", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
+                "--add-header", "Accept-Language: pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+                "--add-header", "Accept-Encoding: gzip, deflate, br",
+                "--add-header", "DNT: 1",
+                "--add-header", "Connection: keep-alive",
+                "--add-header", "Upgrade-Insecure-Requests: 1",
+                "--add-header", "Sec-Fetch-Dest: document",
+                "--add-header", "Sec-Fetch-Mode: navigate",
+                "--add-header", "Sec-Fetch-Site: none",
+                "--add-header", "Sec-Fetch-User: ?1",
+                "--add-header", "Cache-Control: max-age=0"
+            ]
+            
+            # Obter informações do vídeo
+            info_result = subprocess.run(
+                ["yt-dlp"] + yt_dlp_opts + [url],
+                capture_output=True, text=True, timeout=60
+            )
             
             print(f"[DEBUG] Saída do yt-dlp info: {info_result.stdout}")
             print(f"[DEBUG] Erro do yt-dlp info: {info_result.stderr}")
@@ -139,16 +158,16 @@ def download_video():
                 return jsonify({"error": "Vídeo não está disponível"}), 400
             
             # Baixar thumbnail
-            thumbnail_result = subprocess.run([
-                "yt-dlp",
-                "--cookies", temp_cookies_path,
-                "--write-thumbnail",
-                "--skip-download",
-                "--convert-thumbnails", "jpg",
-                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-                "-o", os.path.join(THUMBNAIL_FOLDER, f"{video_id}"),
-                url
-            ], capture_output=True, text=True, timeout=30)
+            thumbnail_result = subprocess.run(
+                ["yt-dlp"] + yt_dlp_opts + [
+                    "--write-thumbnail",
+                    "--skip-download",
+                    "--convert-thumbnails", "jpg",
+                    "-o", os.path.join(THUMBNAIL_FOLDER, f"{video_id}"),
+                    url
+                ],
+                capture_output=True, text=True, timeout=30
+            )
             
             thumbnail_url = None
             thumbnails = [f for f in os.listdir(THUMBNAIL_FOLDER) if f.startswith(video_id)]
@@ -156,19 +175,15 @@ def download_video():
                 thumbnail_url = f"/thumbnails/{thumbnails[0]}"
             
             # Baixar vídeo
-            result = subprocess.run([
-                "yt-dlp",
-                "--cookies", temp_cookies_path,
-                "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-                "--merge-output-format", "mp4",
-                "--socket-timeout", "30",
-                "--retries", "10",
-                "--fragment-retries", "10",
-                "--extractor-retries", "10",
-                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-                "-o", output_template,
-                url
-            ], capture_output=True, text=True, timeout=300)
+            result = subprocess.run(
+                ["yt-dlp"] + yt_dlp_opts + [
+                    "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+                    "--merge-output-format", "mp4",
+                    "-o", output_template,
+                    url
+                ],
+                capture_output=True, text=True, timeout=300
+            )
 
             print("[STDOUT]", result.stdout)
             print("[STDERR]", result.stderr)
