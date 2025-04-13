@@ -147,7 +147,16 @@ def download_video():
                 "--geo-bypass",
                 "--geo-bypass-country", "BR",
                 "--extractor-args", "youtube:player_skip=js,webpage",
-                "--extractor-args", "youtube:player_client=web"
+                "--extractor-args", "youtube:player_client=web",
+                "--extractor-args", "youtube:player_skip=webpage",
+                "--extractor-args", "youtube:player_client=android",
+                "--extractor-args", "youtube:player_client=ios",
+                "--extractor-args", "youtube:player_client=web_embedded",
+                "--extractor-args", "youtube:player_client=android_embedded",
+                "--extractor-args", "youtube:player_client=ios_embedded",
+                "--extractor-args", "youtube:player_client=web_mobile",
+                "--extractor-args", "youtube:player_client=android_mobile",
+                "--extractor-args", "youtube:player_client=ios_mobile"
             ]
             
             # Tentar diferentes métodos de extração
