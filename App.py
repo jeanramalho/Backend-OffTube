@@ -120,7 +120,7 @@ def download_video():
                 "--retries", "10",
                 "--fragment-retries", "10",
                 "--extractor-retries", "10",
-                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
                 "--http-chunk-size", "10M",
                 "--no-check-certificates",
                 "--no-warnings",
@@ -136,11 +136,18 @@ def download_video():
                 "--add-header", "Sec-Fetch-Site: none",
                 "--add-header", "Sec-Fetch-User: ?1",
                 "--add-header", "Cache-Control: max-age=0",
+                "--add-header", "Referer: https://www.youtube.com/",
+                "--add-header", "Origin: https://www.youtube.com",
                 "--prefer-insecure",
                 "--no-playlist",
                 "--force-ipv4",
                 "--geo-bypass",
-                "--geo-bypass-country", "BR"
+                "--geo-bypass-country", "BR",
+                "--extractor-args", "youtube:player_skip=js,webpage",
+                "--extractor-args", "youtube:player_client=web",
+                "--extractor-args", "youtube:player_skip=webpage",
+                "--extractor-args", "youtube:player_skip=js",
+                "--extractor-args", "youtube:player_skip=webpage,js"
             ]
             
             # Tentar diferentes métodos de extração
@@ -151,14 +158,25 @@ def download_video():
                 ["--extractor-args", "youtube:player_client=ios"],
                 ["--extractor-args", "youtube:player_client=android_embedded"],
                 ["--extractor-args", "youtube:player_client=web_embedded"],
-                ["--extractor-args", "youtube:player_client=ios_embedded"]
+                ["--extractor-args", "youtube:player_client=ios_embedded"],
+                ["--extractor-args", "youtube:player_skip=js,webpage"],
+                ["--extractor-args", "youtube:player_skip=webpage"],
+                ["--extractor-args", "youtube:player_skip=js"],
+                ["--extractor-args", "youtube:player_skip=webpage,js"],
+                ["--extractor-args", "youtube:player_client=web;player_skip=js,webpage"],
+                ["--extractor-args", "youtube:player_client=android;player_skip=js,webpage"],
+                ["--extractor-args", "youtube:player_client=ios;player_skip=js,webpage"]
             ]
             
             video_info = None
+            last_error = None
+            
             for method in extraction_methods:
                 try:
                     print(f"[INFO] Tentando método de extração: {method}")
                     info_cmd = ["yt-dlp"] + base_opts + method + ["--skip-download", "--dump-json", url]
+                    print(f"[DEBUG] Comando executado: {' '.join(info_cmd)}")
+                    
                     info_result = subprocess.run(
                         info_cmd,
                         capture_output=True,
@@ -166,17 +184,27 @@ def download_video():
                         timeout=60
                     )
                     
+                    print(f"[DEBUG] Saída do comando: {info_result.stdout}")
+                    print(f"[DEBUG] Erro do comando: {info_result.stderr}")
+                    
                     if info_result.returncode == 0:
                         video_info = json.loads(info_result.stdout)
                         print(f"[INFO] Método de extração bem-sucedido: {method}")
                         break
+                    else:
+                        last_error = info_result.stderr
+                        print(f"[AVISO] Falha no método de extração {method}: {info_result.stderr}")
                 except Exception as e:
+                    last_error = str(e)
                     print(f"[AVISO] Falha no método de extração {method}: {str(e)}")
                     continue
             
             if not video_info:
-                print("[ERRO] Todos os métodos de extração falharam")
-                return jsonify({"error": "Não foi possível extrair informações do vídeo"}), 500
+                print(f"[ERRO] Todos os métodos de extração falharam. Último erro: {last_error}")
+                return jsonify({
+                    "error": "Não foi possível extrair informações do vídeo",
+                    "details": last_error
+                }), 500
                 
             video_title = video_info.get("title", "Vídeo sem título")
             video_duration = video_info.get("duration", 0)
