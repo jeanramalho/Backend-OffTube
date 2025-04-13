@@ -1,21 +1,25 @@
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import os
-import uuid
 import subprocess
-import tempfile
 import json
+import uuid
 import re
+import tempfile
+from dotenv import load_dotenv
+
+# Carregar variáveis de ambiente
+load_dotenv()
 
 app = Flask(__name__)
 CORS(app)
 
-# Pasta onde os vídeos serão salvos
-DOWNLOAD_FOLDER = os.path.join(os.getcwd(), "videos")
-os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
+# Configurações
+DOWNLOAD_FOLDER = "videos"
+THUMBNAIL_FOLDER = "thumbnails"
 
-# Pasta para thumbnails
-THUMBNAIL_FOLDER = os.path.join(os.getcwd(), "thumbnails")
+# Criar pastas se não existirem
+os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 os.makedirs(THUMBNAIL_FOLDER, exist_ok=True)
 
 @app.route("/download", methods=["POST"])
@@ -109,10 +113,9 @@ def download_video():
                     content = f.read()
                     print(f"[DEBUG] Conteúdo do arquivo de cookies:\n{content}")
             
-            # Configurações adicionais para evitar bloqueio
-            yt_dlp_opts = [
+            # Configurações base do yt-dlp
+            base_opts = [
                 "--cookies", temp_cookies_path,
-                "--dump-json",
                 "--socket-timeout", "30",
                 "--retries", "10",
                 "--fragment-retries", "10",
@@ -133,18 +136,6 @@ def download_video():
                 "--add-header", "Sec-Fetch-Site: none",
                 "--add-header", "Sec-Fetch-User: ?1",
                 "--add-header", "Cache-Control: max-age=0",
-                # Novas opções para resolver o problema de extração
-                "--extractor-args", "youtube:player_client=android",
-                "--extractor-args", "youtube:player_skip=webpage",
-                "--extractor-args", "youtube:player_client=web",
-                "--extractor-args", "youtube:player_skip=js",
-                "--extractor-args", "youtube:player_skip=configs",
-                "--extractor-args", "youtube:player_skip=webpage",
-                "--extractor-args", "youtube:player_skip=webpage",
-                "--extractor-args", "youtube:player_skip=webpage",
-                "--extractor-args", "youtube:player_skip=webpage",
-                "--extractor-args", "youtube:player_skip=webpage",
-                # Configurações adicionais para melhorar a extração
                 "--prefer-insecure",
                 "--no-playlist",
                 "--force-ipv4",
@@ -152,34 +143,47 @@ def download_video():
                 "--geo-bypass-country", "BR"
             ]
             
-            # Primeiro, tentar obter apenas as informações do vídeo
-            print("[INFO] Tentando obter informações do vídeo...")
-            info_cmd = ["yt-dlp"] + yt_dlp_opts + ["--skip-download", url]
-            info_result = subprocess.run(
-                info_cmd,
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
+            # Tentar diferentes métodos de extração
+            extraction_methods = [
+                [],  # Método padrão
+                ["--extractor-args", "youtube:player_client=android"],
+                ["--extractor-args", "youtube:player_client=web"],
+                ["--extractor-args", "youtube:player_client=ios"],
+                ["--extractor-args", "youtube:player_client=android_embedded"],
+                ["--extractor-args", "youtube:player_client=web_embedded"],
+                ["--extractor-args", "youtube:player_client=ios_embedded"]
+            ]
             
-            print(f"[DEBUG] Saída do yt-dlp info: {info_result.stdout}")
-            print(f"[DEBUG] Erro do yt-dlp info: {info_result.stderr}")
+            video_info = None
+            for method in extraction_methods:
+                try:
+                    print(f"[INFO] Tentando método de extração: {method}")
+                    info_cmd = ["yt-dlp"] + base_opts + method + ["--skip-download", "--dump-json", url]
+                    info_result = subprocess.run(
+                        info_cmd,
+                        capture_output=True,
+                        text=True,
+                        timeout=60
+                    )
+                    
+                    if info_result.returncode == 0:
+                        video_info = json.loads(info_result.stdout)
+                        print(f"[INFO] Método de extração bem-sucedido: {method}")
+                        break
+                except Exception as e:
+                    print(f"[AVISO] Falha no método de extração {method}: {str(e)}")
+                    continue
             
-            if info_result.returncode != 0:
-                print(f"[ERRO] Falha ao obter informações do vídeo: {info_result.stderr}")
-                return jsonify({"error": f"Erro ao obter informações do vídeo: {info_result.stderr}"}), 500
+            if not video_info:
+                print("[ERRO] Todos os métodos de extração falharam")
+                return jsonify({"error": "Não foi possível extrair informações do vídeo"}), 500
                 
-            try:
-                video_info = json.loads(info_result.stdout)
-                video_title = video_info.get("title", "Vídeo sem título")
-                video_duration = video_info.get("duration", 0)
-            except json.JSONDecodeError:
-                print("[ERRO] Falha ao decodificar informações do vídeo")
-                return jsonify({"error": "Falha ao decodificar informações do vídeo"}), 500
+            video_title = video_info.get("title", "Vídeo sem título")
+            video_duration = video_info.get("duration", 0)
             
             # Baixar thumbnail
             print("[INFO] Baixando thumbnail...")
-            thumbnail_cmd = ["yt-dlp"] + yt_dlp_opts + [
+            thumbnail_cmd = ["yt-dlp"] + base_opts + [
                 "--write-thumbnail",
                 "--skip-download",
                 "--convert-thumbnails", "jpg",
@@ -200,7 +204,7 @@ def download_video():
             
             # Baixar vídeo
             print("[INFO] Iniciando download do vídeo...")
-            download_cmd = ["yt-dlp"] + yt_dlp_opts + [
+            download_cmd = ["yt-dlp"] + base_opts + [
                 "-f", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
                 "--merge-output-format", "mp4",
                 "-o", output_template,
@@ -248,48 +252,17 @@ def download_video():
         print(f"[ERRO] {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-# Servir os vídeos
-@app.route("/videos/<path:filename>")
+@app.route("/videos/<filename>")
 def serve_video(filename):
-    return send_from_directory(DOWNLOAD_FOLDER, filename)
+    return send_file(os.path.join(DOWNLOAD_FOLDER, filename))
 
-# Servir thumbnails
-@app.route("/thumbnails/<path:filename>")
+@app.route("/thumbnails/<filename>")
 def serve_thumbnail(filename):
-    return send_from_directory(THUMBNAIL_FOLDER, filename)
+    return send_file(os.path.join(THUMBNAIL_FOLDER, filename))
 
-# Listar os vídeos existentes
-@app.route("/listar")
-def listar_videos():
-    videos = os.listdir(DOWNLOAD_FOLDER)
-    return jsonify(videos)
-
-# Verificar status da API
 @app.route("/status")
 def status():
-    return jsonify({
-        "status": "online",
-        "videos_count": len(os.listdir(DOWNLOAD_FOLDER)),
-        "cookies_configured": bool(os.environ.get("YOUTUBE_COOKIES"))
-    })
-
-@app.route("/videos/<filename>", methods=["DELETE"])
-def delete_video(filename):
-    file_path = os.path.join(DOWNLOAD_FOLDER, filename)
-
-    if not os.path.exists(file_path):
-        return jsonify({"error": "Arquivo não encontrado"}), 404
-
-    try:
-        os.remove(file_path)
-        print(f"[INFO] Vídeo {filename} removido com sucesso.")
-        return jsonify({"message": "Vídeo removido com sucesso"}), 200
-    except Exception as e:
-        print(f"[ERRO] Falha ao remover {filename}: {e}")
-        return jsonify({"error": str(e)}), 500
-
+    return jsonify({"status": "online", "cookies_configured": bool(os.environ.get("YOUTUBE_COOKIES"))})
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 10000))
-    print(f"[INFO] Iniciando servidor na porta {port}")
-    app.run(host="0.0.0.0", port=port, debug=True)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
