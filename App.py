@@ -48,6 +48,27 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/114.0"
 ]
 
+# Configurar logging
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
+@app.before_request
+def log_request_info():
+    logger.info('Headers: %s', request.headers)
+    logger.info('Body: %s', request.get_data())
+
+@app.after_request
+def log_response_info(response):
+    logger.info('Response: %s', response.get_data())
+    return response
+
 def update_ytdlp():
     """Atualiza o yt-dlp periodicamente para manter compatibilidade"""
     print("[INFO] Verificando atualizações do yt-dlp...")
@@ -389,34 +410,37 @@ def is_auth_error(error_msg):
     ]
     return any(keyword in error_msg.lower() for keyword in auth_keywords)
 
-@app.route("/download", methods=["POST"])  
+@app.route("/download", methods=["POST"])
 def download_video():
-    data = request.get_json()
-    url = data.get("url")
-
-    if not url:
-        return jsonify({"error": "URL é obrigatória"}), 400
-
     try:
+        logger.info("Iniciando requisição de download")
+        data = request.get_json()
+        url = data.get("url")
+
+        if not url:
+            logger.error("URL não fornecida")
+            return jsonify({"error": "URL é obrigatória"}), 400
+
         # Verificação inicial de cookies
         cookies_content = os.environ.get("YOUTUBE_COOKIES", "")
         if not cookies_content:
-            print("[AVISO] Cookies não encontrados, tentando obter novos cookies")
+            logger.warning("Cookies não encontrados, tentando obter novos cookies")
             cookies_content = refresh_youtube_cookies()
             if not cookies_content:
+                logger.error("Não foi possível obter cookies do YouTube")
                 return jsonify({"error": "Não foi possível obter cookies do YouTube"}), 500
 
         video_id = str(uuid.uuid4())
         output_template = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.%(ext)s")
         thumbnail_path = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
 
-        print(f"[INFO] Baixando vídeo: {url}")
-        print(f"[INFO] Caminho de saída: {output_template}")
+        logger.info(f"Baixando vídeo: {url}")
+        logger.info(f"Caminho de saída: {output_template}")
 
         # Verificar se a URL é válida
         parsed_url = urlparse(url)
         if not (parsed_url.netloc in ['www.youtube.com', 'youtube.com', 'youtu.be', 'm.youtube.com']):
-            print(f"[ERRO] URL inválida: {url}")
+            logger.error(f"URL inválida: {url}")
             return jsonify({"error": "URL do YouTube inválida"}), 400
             
         # Verificar e criar pastas se não existirem
@@ -465,6 +489,8 @@ def download_video():
                 url
             ]
 
+            logger.info(f"Executando comando: {' '.join(cmd)}")
+
             # Executar o comando
             result = subprocess.run(
                 cmd,
@@ -473,14 +499,17 @@ def download_video():
                 timeout=300  # 5 minutos de timeout
             )
 
+            logger.info(f"Saída do comando: {result.stdout}")
+            logger.info(f"Erro do comando: {result.stderr}")
+
             # Verificar se houve erro
             if result.returncode != 0:
                 error_msg = result.stderr
-                print(f"[ERRO] Falha ao baixar vídeo: {error_msg}")
+                logger.error(f"Falha ao baixar vídeo: {error_msg}")
                 
                 # Verificar se é erro de autenticação
-                if is_auth_error(str(error_msg)):  # Conversão explícita para string
-                    print("[AVISO] Erro de autenticação detectado, tentando atualizar cookies...")
+                if is_auth_error(str(error_msg)):
+                    logger.warning("Erro de autenticação detectado, tentando atualizar cookies...")
                     cookies_content = refresh_youtube_cookies()
                     if not cookies_content:
                         return jsonify({"error": "Falha na autenticação com o YouTube"}), 401
@@ -506,7 +535,7 @@ def download_video():
                     
                     if result.returncode != 0:
                         error_msg = result.stderr
-                        print(f"[ERRO] Segunda tentativa falhou: {error_msg}")
+                        logger.error(f"Segunda tentativa falhou: {error_msg}")
                         return jsonify({"error": "Falha persistente no download. Por favor, tente novamente mais tarde."}), 500
                 
                 # Se não for erro de autenticação ou a segunda tentativa falhar
@@ -516,10 +545,13 @@ def download_video():
             # Encontrar o arquivo baixado
             downloaded_files = [f for f in os.listdir(DOWNLOAD_FOLDER) if f.startswith(video_id)]
             if not downloaded_files:
+                logger.error("Vídeo baixado mas não encontrado no servidor")
                 return jsonify({"error": "Vídeo baixado mas não encontrado no servidor"}), 500
 
             video_filename = downloaded_files[0]
             video_path = os.path.join(DOWNLOAD_FOLDER, video_filename)
+
+            logger.info(f"Download concluído com sucesso: {video_filename}")
 
             # Retornar informações do vídeo
             return jsonify({
@@ -536,9 +568,10 @@ def download_video():
                 os.unlink(temp_cookies_path)
 
     except subprocess.TimeoutExpired:
+        logger.error("Tempo limite excedido ao baixar o vídeo")
         return jsonify({"error": "Tempo limite excedido ao baixar o vídeo"}), 504
     except Exception as e:
-        print(f"[ERRO] Erro inesperado: {str(e)}")
+        logger.error(f"Erro inesperado: {str(e)}")
         return jsonify({"error": "Erro interno do servidor", "details": str(e)}), 500
 
 # Nova função para limpar regularmente arquivos antigos
@@ -577,7 +610,7 @@ if __name__ == "__main__":
     # Verificar cookies no início
     cookies_content = os.environ.get("YOUTUBE_COOKIES", "")
     if not cookies_content:
-        print("[AVISO] Cookies não encontrados, tentando obter novos cookies...")
+        logger.warning("Cookies não encontrados, tentando obter novos cookies...")
         refresh_youtube_cookies()
     
     # Iniciar thread de verificação de cookies
@@ -591,4 +624,6 @@ if __name__ == "__main__":
     cleanup_thread.start()
     
     # Iniciar aplicativo Flask
-    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
+    port = int(os.environ.get("PORT", 10000))
+    logger.info(f"Iniciando servidor na porta {port}")
+    app.run(host="0.0.0.0", port=port)

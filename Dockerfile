@@ -1,5 +1,7 @@
-ENV DEBIAN_FRONTEND=noninteractive
 FROM python:3.11-slim
+
+# Configurar ambiente não interativo
+ENV DEBIAN_FRONTEND=noninteractive
 
 # Instalar dependências essenciais
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -21,11 +23,6 @@ RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d '.' -f 
     && unzip chromedriver_linux64.zip -d /usr/bin \
     && rm chromedriver_linux64.zip \
     && chmod +x /usr/bin/chromedriver
-
-    driver.execute_cdp_cmd(
-        "Network.setUserAgentOverride",
-        {"userAgent": random.choice(USER_AGENTS)}
-    )
 
 # Instalar FFmpeg
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
