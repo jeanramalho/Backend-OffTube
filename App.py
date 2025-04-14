@@ -22,7 +22,7 @@ def download_video():
     output_template = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.%(ext)s")
     thumbnail_path = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
 
-   cmd = [
+    cmd = [
     "python3", "-m", "yt_dlp",
     "--cookies", "cookies.txt",  # <- aqui
     "--format", "bestvideo+bestaudio/best",
