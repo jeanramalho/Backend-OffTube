@@ -25,7 +25,7 @@ def download_video():
     cmd = [
     "python3", "-m", "yt_dlp",
     "--cookies", "cookies.txt",
-    "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",  # User-Agent atualizado
+    "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
     "--format", "bestvideo",
     "--merge-output-format", "mp4",
     "--output", output_template,
@@ -33,10 +33,10 @@ def download_video():
     "--convert-thumbnails", "jpg",
     "--no-playlist",
     "--quiet",
-    "--verbose",  # Adicionado para obter logs detalhados
-    "--no-check-certificate",  # Adicionado para contornar problemas de certificado (se necessário)
+    "--no-check-certificate",  # Ignora a verificação de certificado SSL
     url
 ]
+
 
     try:
         print(f"Executando: {' '.join(cmd)}")
