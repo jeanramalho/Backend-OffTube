@@ -39,9 +39,9 @@ def extract_youtube_id(url):
         return None
     return match.group(1)
 
-def get_video_info_free_api(url):
+def get_video_info_rapidapi(url):
     """
-    Obtém informações do vídeo usando a API gratuita 'YouTube Quick Video Downloader'
+    Obtém informações do vídeo usando a API do RapidAPI que funcionou no exemplo
     """
     try:
         # Extrair ID do vídeo
@@ -51,17 +51,17 @@ def get_video_info_free_api(url):
             
         logger.info(f"Obtendo informações para o vídeo com ID: {video_id}")
         
-        # Construir a URL da API
-        api_url = "https://youtube-video-download-info.p.rapidapi.com/dl"
+        # Construir a URL da API - usando o endpoint que funcionou no exemplo
+        api_url = "https://youtube-quick-video-downloader-free-api-downlaod-all-video.p.rapidapi.com/videodownload.php"
         
-        querystring = {"id": video_id}
+        querystring = {"url": url}
         
         headers = {
-            "X-RapidAPI-Key": os.getenv("RAPIDAPI_KEY", "CHAVE_DE_EXEMPLO"),
-            "X-RapidAPI-Host": "youtube-video-download-info.p.rapidapi.com"
+            "X-RapidAPI-Key": os.getenv("RAPIDAPI_KEY", "e675e37fe3msh28737c9013eca79p1ed09cjsn7b8a4c446ef0"),
+            "X-RapidAPI-Host": "youtube-quick-video-downloader-free-api-downlaod-all-video.p.rapidapi.com"
         }
         
-        logger.info(f"Fazendo requisição para a API gratuita")
+        logger.info(f"Fazendo requisição para a API RapidAPI")
         response = requests.get(api_url, headers=headers, params=querystring)
         
         if response.status_code != 200:
@@ -71,40 +71,72 @@ def get_video_info_free_api(url):
         try:
             data = response.json()
             logger.info("Resposta da API recebida com sucesso")
+            logger.info(f"Dados da API: {json.dumps(data)[:500]}...")
         except json.JSONDecodeError as e:
             logger.error(f"Erro ao decodificar JSON: {str(e)}")
             logger.error(f"Conteúdo recebido: {response.text[:500]}...")
             raise Exception("Falha ao processar resposta da API")
-            
-        # Verificar se a resposta contém dados válidos
-        if not data or "link" not in data:
-            logger.error(f"Resposta inválida da API: {data}")
-            raise Exception("A API não retornou links de download")
-            
-        # Encontrar o melhor formato de qualidade disponível
-        formats = data.get("link", [])
-        best_video = None
         
-        # Procurar por mp4 com a maior resolução
-        for fmt in formats:
-            if fmt.get("type") == "mp4":
-                if not best_video or fmt.get("quality", 0) > best_video.get("quality", 0):
-                    best_video = fmt
-        
-        # Se não encontrou mp4, usar qualquer formato disponível
-        if not best_video and formats:
-            best_video = formats[0]
+        # Processar dados do formato desta API específica
+        if not data or not isinstance(data, dict):
+            raise Exception("Formato de resposta inválido")
             
-        if not best_video:
-            raise Exception("Nenhum formato de vídeo disponível")
-            
-        # Informações do vídeo
+        # Esta API pode ter estrutura diferente - adaptando o parsing baseado no exemplo fornecido
         title = data.get("title", f"video_{video_id}")
-        thumbnail_url = data.get("thumb", f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg")
-        download_url = best_video.get("url")
+        thumbnail_url = data.get("thumbnail", f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg")
+        
+        # Buscar o melhor link de download disponível
+        download_url = None
+        formats = []
+        
+        # Verificar diferentes campos que podem conter links
+        for key in ["mp4", "videos", "formats", "links"]:
+            if key in data and isinstance(data[key], (list, dict)):
+                formats = data[key]
+                break
+                
+        # Se formats for um dicionário (comum em algumas APIs)
+        if isinstance(formats, dict):
+            best_quality = 0
+            for quality, link in formats.items():
+                try:
+                    # Tentar extrair o número da qualidade (ex: "720" de "720p")
+                    quality_val = int(re.search(r'(\d+)', quality).group(1))
+                    if quality_val > best_quality and isinstance(link, str) and link.startswith("http"):
+                        best_quality = quality_val
+                        download_url = link
+                except (AttributeError, ValueError):
+                    # Se não conseguir extrair a qualidade, só usar se não tiver outro
+                    if not download_url and isinstance(link, str) and link.startswith("http"):
+                        download_url = link
+        
+        # Se formats for uma lista (outro formato comum)
+        elif isinstance(formats, list):
+            best_quality = 0
+            for item in formats:
+                if isinstance(item, dict):
+                    quality = item.get("quality", "0")
+                    link = item.get("url", "")
+                    
+                    try:
+                        quality_val = int(re.search(r'(\d+)', quality).group(1))
+                        if quality_val > best_quality and link.startswith("http"):
+                            best_quality = quality_val
+                            download_url = link
+                    except (AttributeError, ValueError):
+                        if not download_url and link.startswith("http"):
+                            download_url = link
+        
+        # Verificar se encontramos um URL válido
+        if not download_url:
+            # Verificar diretamente no objeto raiz se há um URL de download
+            for key in ["url", "download_url", "link", "video_url"]:
+                if key in data and isinstance(data[key], str) and data[key].startswith("http"):
+                    download_url = data[key]
+                    break
         
         if not download_url:
-            raise Exception("URL de download não encontrada")
+            raise Exception("URL de download não encontrada na resposta")
             
         return {
             'title': title,
@@ -119,85 +151,122 @@ def get_video_info_free_api(url):
 
 def get_video_info_alternative(url):
     """
-    Método alternativo para obter informações do vídeo sem API key
+    Método alternativo para obter informações do vídeo usando o serviço Y2mate
     """
     try:
         video_id = extract_youtube_id(url)
         if not video_id:
             raise Exception("URL do YouTube inválida")
-            
-        # Usar serviço y2mate diretamente sem API key
-        api_url = f"https://x2download.app/api/ajaxSearch"
         
-        payload = {
-            "q": url,
-            "vt": "home"
-        }
+        logger.info(f"Tentando método alternativo para: {video_id}")
+        
+        # Primeiro, buscar uma API pública alternativa que não requer chave
+        api_url = f"https://api.vevioz.com/api/button/mp4/{video_id}"
         
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': 'application/json',
-            'Content-Type': 'application/x-www-form-urlencoded',
-            'Origin': 'https://x2download.app',
-            'Referer': 'https://x2download.app/'
+            'Accept': 'application/json, text/plain, */*',
+            'Referer': 'https://vevioz.com/'
         }
         
-        logger.info(f"Tentando método alternativo para: {video_id}")
-        response = requests.post(api_url, headers=headers, data=payload)
+        logger.info(f"Buscando links no serviço vevioz")
+        response = requests.get(api_url, headers=headers)
         
-        if response.status_code != 200:
-            raise Exception(f"Erro ao acessar serviço alternativo: {response.status_code}")
-            
-        try:
-            data = response.json()
-        except:
-            logger.error(f"Erro ao decodificar resposta: {response.text[:500]}...")
-            raise Exception("Resposta inválida do serviço alternativo")
-            
-        if not data.get("links") or not data.get("title"):
-            raise Exception("Dados inválidos do serviço alternativo")
-            
-        # Obter o link de download de melhor qualidade
-        links = data.get("links", {}).get("mp4", {})
-        best_link = None
-        best_quality = 0
-        
-        for quality, link_info in links.items():
+        # Verificar se temos HTML com links
+        if response.status_code == 200:
             try:
-                q = int(quality.replace("p", ""))
-                if q > best_quality:
-                    best_quality = q
-                    best_link = link_info.get("k")
-            except:
-                continue
+                # Se for HTML, tentar extrair os links
+                html_content = response.text
+                # Buscar links dos downloads disponíveis
+                download_links = re.findall(r'href=[\'"]?([^\'" >]+)', html_content)
                 
-        if not best_link:
-            raise Exception("Nenhum link de download encontrado")
-            
-        # Obter o link direto de download
-        download_api = "https://x2download.app/api/ajaxConvert"
-        convert_payload = {
-            "vid": video_id,
-            "k": best_link
+                # Filtar apenas links de download de mp4
+                mp4_links = [link for link in download_links if link.startswith("https://") and ".mp4" in link]
+                
+                if mp4_links:
+                    # Usar o primeiro link disponível
+                    download_url = mp4_links[0]
+                    
+                    # Para título, usar um regex simples
+                    title_match = re.search(r'<b>(.*?)</b>', html_content)
+                    title = title_match.group(1) if title_match else f"Video {video_id}"
+                    
+                    logger.info(f"Link de download encontrado no método alternativo: {download_url[:50]}...")
+                    
+                    return {
+                        'title': title,
+                        'thumbnail_url': f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg",
+                        'download_url': download_url,
+                        'video_id': video_id
+                    }
+            except Exception as e:
+                logger.error(f"Erro ao processar resposta HTML: {str(e)}")
+        
+        # Se o método acima falhar, tentar com o serviço y2mate
+        logger.info("Tentando método y2mate")
+        
+        # Etapa 1: Iniciar o processo de análise
+        analyze_url = "https://www.y2mate.com/mates/analyzeV2/ajax"
+        payload = {
+            "url": url,
+            "q_auto": 0,
+            "ajax": 1
         }
         
-        convert_response = requests.post(download_api, headers=headers, data=convert_payload)
+        analyze_response = requests.post(analyze_url, data=payload, headers=headers)
         
-        if convert_response.status_code != 200:
-            raise Exception(f"Erro ao converter vídeo: {convert_response.status_code}")
-            
+        if analyze_response.status_code != 200:
+            raise Exception(f"Erro ao analisar vídeo: {analyze_response.status_code}")
+        
         try:
-            convert_data = convert_response.json()
+            analyze_data = analyze_response.json()
         except:
-            raise Exception("Erro ao decodificar resposta de conversão")
+            logger.error(f"Erro ao decodificar resposta y2mate: {analyze_response.text[:500]}...")
+            raise Exception("Resposta inválida do serviço y2mate")
+        
+        if not analyze_data.get("status") == "success":
+            raise Exception("Análise do vídeo falhou")
+        
+        # Extrair informações necessárias
+        title = analyze_data.get("title", f"Video {video_id}")
+        vid = analyze_data.get("vid", "")
+        
+        if not vid:
+            raise Exception("ID do vídeo não encontrado na resposta")
+        
+        # Etapa 2: Converter para obter o link de download
+        convert_url = "https://www.y2mate.com/mates/convertV2/index"
+        
+        # Tentar várias qualidades, do melhor para o pior
+        qualities = ["1080p", "720p", "480p", "360p", "144p"]
+        download_url = None
+        
+        for quality in qualities:
+            convert_payload = {
+                "vid": vid,
+                "k": f"mp4_{quality}",
+            }
             
-        if not convert_data.get("dlink"):
-            raise Exception("Link direto não encontrado")
+            logger.info(f"Tentando obter vídeo na qualidade {quality}")
+            convert_response = requests.post(convert_url, data=convert_payload, headers=headers)
             
+            if convert_response.status_code == 200:
+                try:
+                    convert_data = convert_response.json()
+                    if convert_data.get("status") == "success" and convert_data.get("dlink"):
+                        download_url = convert_data.get("dlink")
+                        logger.info(f"Link de download encontrado: {quality}")
+                        break
+                except:
+                    continue
+        
+        if not download_url:
+            raise Exception("Nenhum link de download encontrado")
+        
         return {
-            'title': data.get("title", f"video_{video_id}"),
+            'title': title,
             'thumbnail_url': f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg",
-            'download_url': convert_data.get("dlink"),
+            'download_url': download_url,
             'video_id': video_id
         }
         
@@ -225,7 +294,7 @@ def download_video(video_info):
             'Referer': 'https://www.youtube.com/'
         }
         
-        logger.info(f"Baixando vídeo de: {video_info['download_url']}")
+        logger.info(f"Baixando vídeo de: {video_info['download_url'][:50]}...")
         response = requests.get(video_info["download_url"], headers=headers, stream=True)
         
         if response.status_code == 200:
@@ -303,11 +372,11 @@ def handle_download():
         error_message = None
         
         try:
-            logger.info("Tentando obter informações com API principal")
-            video_info = get_video_info_free_api(url)
+            logger.info("Tentando obter informações com API RapidAPI")
+            video_info = get_video_info_rapidapi(url)
         except Exception as e:
             error_message = str(e)
-            logger.warning(f"API principal falhou: {error_message}")
+            logger.warning(f"API RapidAPI falhou: {error_message}")
             
             # Tentar método alternativo
             try:
@@ -315,10 +384,32 @@ def handle_download():
                 video_info = get_video_info_alternative(url)
             except Exception as e2:
                 logger.error(f"Método alternativo também falhou: {str(e2)}")
-                return jsonify({
-                    "error": "Falha ao processar URL do vídeo",
-                    "details": f"Tentamos múltiplos métodos, mas todos falharam. Erro: {str(e2)}"
-                }), 500
+                
+                # Último recurso - tentar método direto usando pytube
+                try:
+                    # Este método requer pytube, adicione ao requirements.txt
+                    logger.info("Tentando método direto")
+                    from pytube import YouTube
+                    
+                    yt = YouTube(url)
+                    stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
+                    
+                    if not stream:
+                        raise Exception("Nenhum stream disponível")
+                        
+                    video_info = {
+                        'title': yt.title,
+                        'thumbnail_url': yt.thumbnail_url,
+                        'download_url': stream.url,
+                        'video_id': video_id
+                    }
+                    logger.info("Método direto bem-sucedido")
+                except Exception as e3:
+                    logger.error(f"Todos os métodos falharam. Último erro: {str(e3)}")
+                    return jsonify({
+                        "error": "Falha ao processar URL do vídeo",
+                        "details": f"Tentamos múltiplos métodos, mas todos falharam. Erro: {str(e3)}"
+                    }), 500
         
         if not video_info:
             return jsonify({
