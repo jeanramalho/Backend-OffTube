@@ -55,12 +55,19 @@ def refresh_youtube_cookies():
         chrome_options.add_argument("--disable-gpu")
         chrome_options.add_argument("--window-size=1920,1080")
         chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        chrome_options.add_argument("--disable-blink-features=AutomationControlled")
+        chrome_options.add_experimental_option("excludeSwitches", ["enable-automation"])
+        chrome_options.add_experimental_option('useAutomationExtension', False)
         
         driver = webdriver.Chrome(options=chrome_options)
         wait = WebDriverWait(driver, 20)
         
-        # Acessar YouTube
-        driver.get("https://accounts.google.com/signin")
+        # Acessar YouTube diretamente
+        driver.get("https://www.youtube.com")
+        time.sleep(2)
+        
+        # Clicar no botão de login
+        wait.until(EC.element_to_be_clickable((By.XPATH, "//a[contains(@href, 'accounts.google.com')]"))).click()
         
         # Login com email
         wait.until(EC.visibility_of_element_located((By.ID, "identifierId")))
@@ -75,7 +82,7 @@ def refresh_youtube_cookies():
         # Esperar login completar
         time.sleep(5)
         
-        # Navegar para o YouTube
+        # Navegar para o YouTube novamente
         driver.get("https://www.youtube.com")
         time.sleep(3)
         
@@ -267,6 +274,20 @@ def download_video():
                 "--write-thumbnail",
                 "--convert-thumbnails", "jpg",
                 "--no-playlist",
+                "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+                "--add-header", "Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8",
+                "--add-header", "Accept-Language: pt-BR,pt;q=0.9,en-US;q=0.8,en;q=0.7",
+                "--add-header", "Accept-Encoding: gzip, deflate, br",
+                "--add-header", "DNT: 1",
+                "--add-header", "Connection: keep-alive",
+                "--add-header", "Upgrade-Insecure-Requests: 1",
+                "--add-header", "Sec-Fetch-Dest: document",
+                "--add-header", "Sec-Fetch-Mode: navigate",
+                "--add-header", "Sec-Fetch-Site: none",
+                "--add-header", "Sec-Fetch-User: ?1",
+                "--add-header", "Cache-Control: max-age=0",
+                "--add-header", "Referer: https://www.youtube.com/",
+                "--add-header", "Origin: https://www.youtube.com",
                 url
             ]
 

@@ -11,6 +11,9 @@ RUN apt-get update && apt-get install -y \
     libnss3 \
     libgconf-2-4 \
     libfontconfig1 \
+    libxss1 \
+    libasound2 \
+    libxtst6 \
     --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
@@ -52,7 +55,8 @@ RUN mkdir -p videos thumbnails \
 ENV PYTHONUNBUFFERED=1 \
     DISPLAY=:99 \
     CHROME_BIN=/usr/bin/google-chrome \
-    CHROME_PATH=/usr/bin/google-chrome
+    CHROME_PATH=/usr/bin/google-chrome \
+    PATH="/usr/local/bin:${PATH}"
 
 # Expor porta
 EXPOSE $PORT
