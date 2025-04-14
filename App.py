@@ -1,10 +1,14 @@
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
-import os, uuid, subprocess
+import os, uuid, subprocess, ssl
 from pathlib import Path
+import certifi
 
 app = Flask(__name__)
 CORS(app)
+
+# Configuração do contexto SSL
+ssl._create_default_https_context = ssl._create_unverified_context
 
 DOWNLOAD_FOLDER = "videos"
 THUMBNAIL_FOLDER = "thumbnails"
@@ -23,34 +27,46 @@ def download_video():
     thumbnail_path = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
 
     cmd = [
-    "python3", "-m", "yt_dlp",
-    "--cookies", "cookies.txt",
-    "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-    "--format", "bestvideo",
-    "--merge-output-format", "mp4",
-    "--output", output_template,
-    "--write-thumbnail",
-    "--convert-thumbnails", "jpg",
-    "--no-playlist",
-    "--quiet",
-    "--no-check-certificate",  # Ignora a verificação de certificado SSL
-    url
-]
-
+        "python3", "-m", "yt_dlp",
+        "--cookies", "cookies.txt",
+        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
+        "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
+        "--merge-output-format", "mp4",
+        "--output", output_template,
+        "--write-thumbnail",
+        "--convert-thumbnails", "jpg",
+        "--no-playlist",
+        "--quiet",
+        "--no-check-certificate",
+        "--extractor-args", "youtube:player_client=android",
+        url
+    ]
 
     try:
         print(f"Executando: {' '.join(cmd)}")
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        
         if result.returncode != 0:
-            return jsonify({"error": "Erro ao baixar vídeo", "details": result.stderr}), 500
+            error_msg = result.stderr if result.stderr else result.stdout
+            return jsonify({
+                "error": "Erro ao baixar vídeo",
+                "details": error_msg
+            }), 500
 
-        title = result.stdout.strip()
+        # Verifica se o arquivo foi criado
         video_filename = f"{video_id}.mp4"
+        video_path = os.path.join(DOWNLOAD_FOLDER, video_filename)
+        
+        if not os.path.exists(video_path):
+            return jsonify({
+                "error": "Vídeo não foi baixado corretamente",
+                "details": "Arquivo não encontrado após download"
+            }), 500
+
         thumb_filename = f"{video_id}.jpg"
         response = {
             "success": True,
             "video_id": video_id,
-            "title": title,
             "filename": video_filename,
             "download_url": f"/videos/{video_filename}",
             "thumbnail_url": f"/thumbnails/{thumb_filename}" if os.path.exists(os.path.join(THUMBNAIL_FOLDER, thumb_filename)) else None
@@ -59,7 +75,10 @@ def download_video():
     except subprocess.TimeoutExpired:
         return jsonify({"error": "Tempo limite excedido"}), 504
     except Exception as e:
-        return jsonify({"error": "Erro interno", "details": str(e)}), 500
+        return jsonify({
+            "error": "Erro interno",
+            "details": str(e)
+        }), 500
 
 @app.route("/videos/<filename>", methods=["GET"])
 def serve_video(filename):
