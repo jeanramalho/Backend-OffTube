@@ -1,12 +1,12 @@
 import os
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
-from pytube import YouTube
 import logging
 import uuid
 from pathlib import Path
 import requests
-import time
+from bs4 import BeautifulSoup
+import re
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -21,50 +21,68 @@ THUMBNAIL_FOLDER = "thumbnails"
 Path(DOWNLOAD_FOLDER).mkdir(exist_ok=True)
 Path(THUMBNAIL_FOLDER).mkdir(exist_ok=True)
 
-def download_video(url, video_id):
+# Lista de instâncias do Invidious (podemos alternar entre elas se uma falhar)
+INVIDIOUS_INSTANCES = [
+    "https://invidious.snopyta.org",
+    "https://invidious.kavin.rocks",
+    "https://vid.puffyan.us"
+]
+
+def get_video_info(video_id):
+    for instance in INVIDIOUS_INSTANCES:
+        try:
+            url = f"{instance}/api/v1/videos/{video_id}"
+            response = requests.get(url)
+            if response.status_code == 200:
+                data = response.json()
+                return {
+                    "title": data.get("title", ""),
+                    "thumbnail_url": data.get("videoThumbnails", [{}])[0].get("url", ""),
+                    "formats": data.get("formatStreams", [])
+                }
+        except Exception as e:
+            logger.warning(f"Falha na instância {instance}: {str(e)}")
+            continue
+    raise Exception("Todas as instâncias falharam")
+
+def download_video(video_id, video_info):
     try:
-        logger.info(f"Iniciando download do vídeo: {url}")
-        
-        # Criar objeto YouTube
-        yt = YouTube(url)
-        
-        # Obter informações do vídeo
-        title = yt.title
-        logger.info(f"Título do vídeo: {title}")
+        logger.info(f"Iniciando download do vídeo: {video_id}")
         
         # Baixar thumbnail
-        thumbnail_url = yt.thumbnail_url
-        response = requests.get(thumbnail_url)
+        if video_info["thumbnail_url"]:
+            response = requests.get(video_info["thumbnail_url"])
+            if response.status_code == 200:
+                with open(os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg"), 'wb') as f:
+                    f.write(response.content)
+                logger.info("Thumbnail baixada com sucesso")
+        
+        # Encontrar o melhor formato de vídeo
+        best_format = None
+        for fmt in video_info["formats"]:
+            if fmt.get("type", "").startswith("video/mp4"):
+                if not best_format or fmt.get("quality", "") > best_format.get("quality", ""):
+                    best_format = fmt
+        
+        if not best_format:
+            raise Exception("Nenhum formato MP4 disponível")
+        
+        # Baixar o vídeo
+        video_url = best_format["url"]
+        response = requests.get(video_url, stream=True)
         if response.status_code == 200:
-            with open(os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg"), 'wb') as f:
-                f.write(response.content)
-            logger.info("Thumbnail baixada com sucesso")
-        
-        # Tentar diferentes resoluções
-        streams = yt.streams.filter(
-            progressive=True,
-            file_extension='mp4'
-        ).order_by('resolution').desc()
-        
-        for stream in streams:
-            try:
-                logger.info(f"Tentando baixar em {stream.resolution}")
-                stream.download(
-                    output_path=DOWNLOAD_FOLDER,
-                    filename=f"{video_id}.mp4"
-                )
-                logger.info(f"Download concluído em {stream.resolution}")
-                return True, {
-                    "title": title,
-                    "resolution": stream.resolution
-                }
-            except Exception as e:
-                logger.warning(f"Falha com resolução {stream.resolution}: {str(e)}")
-                time.sleep(2)  # Esperar um pouco antes de tentar a próxima resolução
-                continue
-        
-        return False, "Nenhuma resolução disponível para download"
-        
+            video_path = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.mp4")
+            with open(video_path, 'wb') as f:
+                for chunk in response.iter_content(chunk_size=8192):
+                    if chunk:
+                        f.write(chunk)
+            return True, {
+                "title": video_info["title"],
+                "quality": best_format.get("quality", "")
+            }
+        else:
+            raise Exception(f"Erro ao baixar vídeo: {response.status_code}")
+            
     except Exception as e:
         logger.error(f"Erro ao baixar vídeo: {str(e)}")
         return False, str(e)
@@ -80,8 +98,17 @@ def handle_download():
         if not url:
             return jsonify({"error": "URL é obrigatória"}), 400
 
-        video_id = str(uuid.uuid4())
-        success, result = download_video(url, video_id)
+        # Extrair ID do vídeo
+        video_id = re.search(r'(?:v=|\/)([0-9A-Za-z_-]{11}).*', url)
+        if not video_id:
+            return jsonify({"error": "URL do YouTube inválida"}), 400
+        video_id = video_id.group(1)
+        
+        # Obter informações do vídeo
+        video_info = get_video_info(video_id)
+        
+        # Baixar vídeo
+        success, result = download_video(video_id, video_info)
         
         if not success:
             return jsonify({
@@ -89,24 +116,14 @@ def handle_download():
                 "details": str(result)
             }), 500
 
-        video_filename = f"{video_id}.mp4"
-        video_path = os.path.join(DOWNLOAD_FOLDER, video_filename)
-        
-        if not os.path.exists(video_path):
-            return jsonify({
-                "error": "Vídeo não foi baixado corretamente",
-                "details": "Arquivo não encontrado após download"
-            }), 500
-
-        thumb_filename = f"{video_id}.jpg"
-        response = {
+        return jsonify({
             "success": True,
             "video_id": video_id,
-            "filename": video_filename,
-            "download_url": f"/videos/{video_filename}",
-            "thumbnail_url": f"/thumbnails/{thumb_filename}" if os.path.exists(os.path.join(THUMBNAIL_FOLDER, thumb_filename)) else None
-        }
-        return jsonify(response)
+            "filename": f"{video_id}.mp4",
+            "download_url": f"/videos/{video_id}.mp4",
+            "thumbnail_url": f"/thumbnails/{video_id}.jpg" if os.path.exists(os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")) else None,
+            "title": result["title"]
+        })
         
     except Exception as e:
         logger.error(f"Erro interno: {str(e)}")
