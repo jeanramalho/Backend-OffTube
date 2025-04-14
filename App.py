@@ -7,6 +7,7 @@ import requests
 from pytube import YouTube
 import logging
 import random
+import time
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -42,7 +43,6 @@ def download_with_yt_dlp(url, video_id):
         'extract_flat': False,
         'nocheckcertificate': True,
         'extractor_args': {'youtube': {'player_client': ['android']}},
-        'cookiesfrombrowser': ('chrome',),
         'http_headers': {
             'User-Agent': user_agent,
             'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
@@ -85,6 +85,26 @@ def download_with_yt_dlp(url, video_id):
 def download_with_pytube(url, video_id):
     try:
         logger.info(f"Tentando baixar vídeo com pytube: {url}")
+        
+        # Configurar headers para o pytube
+        headers = {
+            'User-Agent': get_random_user_agent(),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0'
+        }
+        
+        # Adicionar delay aleatório entre tentativas
+        time.sleep(random.uniform(1, 3))
+        
         yt = YouTube(
             url,
             use_oauth=False,
@@ -112,18 +132,7 @@ def download_with_pytube(url, video_id):
                 thumbnail_url = yt.thumbnail_url
                 response = requests.get(
                     thumbnail_url,
-                    headers={
-                        'User-Agent': get_random_user_agent(),
-                        'Accept': 'image/webp,*/*',
-                        'Accept-Language': 'en-US,en;q=0.5',
-                        'Accept-Encoding': 'gzip, deflate, br',
-                        'DNT': '1',
-                        'Connection': 'keep-alive',
-                        'Referer': 'https://www.youtube.com/',
-                        'Sec-Fetch-Dest': 'image',
-                        'Sec-Fetch-Mode': 'no-cors',
-                        'Sec-Fetch-Site': 'cross-site'
-                    }
+                    headers=headers
                 )
                 
                 if response.status_code == 200:
@@ -134,6 +143,7 @@ def download_with_pytube(url, video_id):
                 return True, {"title": yt.title}
             except Exception as e:
                 logger.warning(f"Falha com stream {stream.resolution}: {str(e)}")
+                time.sleep(random.uniform(1, 3))
                 continue
         
         logger.error("Nenhum stream disponível")
