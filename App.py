@@ -6,6 +6,7 @@ import yt_dlp
 import requests
 from pytube import YouTube
 import logging
+import random
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -19,7 +20,18 @@ THUMBNAIL_FOLDER = "thumbnails"
 Path(DOWNLOAD_FOLDER).mkdir(exist_ok=True)
 Path(THUMBNAIL_FOLDER).mkdir(exist_ok=True)
 
+def get_random_user_agent():
+    user_agents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:89.0) Gecko/20100101 Firefox/89.0',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.1.1 Safari/605.1.15'
+    ]
+    return random.choice(user_agents)
+
 def download_with_yt_dlp(url, video_id):
+    user_agent = get_random_user_agent()
     ydl_opts = {
         'format': 'best[ext=mp4]',
         'outtmpl': os.path.join(DOWNLOAD_FOLDER, f'{video_id}.%(ext)s'),
@@ -32,17 +44,32 @@ def download_with_yt_dlp(url, video_id):
         'extractor_args': {'youtube': {'player_client': ['android']}},
         'cookiesfrombrowser': ('chrome',),
         'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-            'Accept-Language': 'en-us,en;q=0.5',
-            'Accept-Encoding': 'gzip,deflate',
-            'Accept-Charset': 'ISO-8859-1,utf-8;q=0.7,*;q=0.7',
+            'User-Agent': user_agent,
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+            'Accept-Language': 'en-US,en;q=0.5',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'DNT': '1',
+            'Connection': 'keep-alive',
+            'Upgrade-Insecure-Requests': '1',
+            'Sec-Fetch-Dest': 'document',
+            'Sec-Fetch-Mode': 'navigate',
+            'Sec-Fetch-Site': 'none',
+            'Sec-Fetch-User': '?1',
+            'Cache-Control': 'max-age=0'
         },
         'socket_timeout': 30,
-        'retries': 3,
+        'retries': 5,
         'no_color': True,
         'ignoreerrors': True,
         'force_generic_extractor': False,
+        'extractor_retries': 3,
+        'fragment_retries': 3,
+        'skip_unavailable_fragments': True,
+        'keep_fragments': True,
+        'no_part': True,
+        'hls_prefer_native': True,
+        'hls_use_mpegts': True,
+        'http_chunk_size': 10485760,
     }
     
     try:
@@ -67,33 +94,47 @@ def download_with_pytube(url, video_id):
         # Configurar headers para o pytube
         yt.bypass_age_gate()
         
-        video = yt.streams.filter(
+        # Tentar diferentes resoluções
+        streams = yt.streams.filter(
             progressive=True,
             file_extension='mp4'
-        ).order_by('resolution').desc().first()
+        ).order_by('resolution').desc()
         
-        if video:
-            logger.info(f"Stream encontrado: {video.resolution}")
-            video.download(
-                output_path=DOWNLOAD_FOLDER,
-                filename=f"{video_id}.mp4"
-            )
-            
-            # Baixar thumbnail
-            thumbnail_url = yt.thumbnail_url
-            response = requests.get(
-                thumbnail_url,
-                headers={
-                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
-                }
-            )
-            
-            if response.status_code == 200:
-                with open(os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg"), 'wb') as f:
-                    f.write(response.content)
-            
-            logger.info(f"Download concluído com sucesso: {yt.title}")
-            return True, {"title": yt.title}
+        for stream in streams:
+            try:
+                logger.info(f"Tentando stream: {stream.resolution}")
+                stream.download(
+                    output_path=DOWNLOAD_FOLDER,
+                    filename=f"{video_id}.mp4"
+                )
+                
+                # Baixar thumbnail
+                thumbnail_url = yt.thumbnail_url
+                response = requests.get(
+                    thumbnail_url,
+                    headers={
+                        'User-Agent': get_random_user_agent(),
+                        'Accept': 'image/webp,*/*',
+                        'Accept-Language': 'en-US,en;q=0.5',
+                        'Accept-Encoding': 'gzip, deflate, br',
+                        'DNT': '1',
+                        'Connection': 'keep-alive',
+                        'Referer': 'https://www.youtube.com/',
+                        'Sec-Fetch-Dest': 'image',
+                        'Sec-Fetch-Mode': 'no-cors',
+                        'Sec-Fetch-Site': 'cross-site'
+                    }
+                )
+                
+                if response.status_code == 200:
+                    with open(os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg"), 'wb') as f:
+                        f.write(response.content)
+                
+                logger.info(f"Download concluído com sucesso: {yt.title}")
+                return True, {"title": yt.title}
+            except Exception as e:
+                logger.warning(f"Falha com stream {stream.resolution}: {str(e)}")
+                continue
         
         logger.error("Nenhum stream disponível")
         return False, "Nenhum stream disponível"
