@@ -23,7 +23,9 @@ def download_video():
     thumbnail_path = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
 
     cmd = [
-        "yt-dlp",
+        "python3", 
+        "-m", 
+        "yt_dlp",
         "--format", "bestvideo+bestaudio/best",
         "--merge-output-format", "mp4",
         "--output", output_template,
