@@ -48,6 +48,34 @@ USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:109.0) Gecko/20100101 Firefox/114.0"
 ]
 
+def update_ytdlp():
+    """Atualiza o yt-dlp periodicamente para manter compatibilidade"""
+    print("[INFO] Verificando atualizações do yt-dlp...")
+    try:
+        subprocess.run(
+            ["yt-dlp", "-U"],
+            check=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE
+        )
+        print("[INFO] yt-dlp atualizado com sucesso")
+    except subprocess.CalledProcessError as e:
+        print(f"[AVISO] Falha ao atualizar yt-dlp: {str(e)}")
+
+def background_cookie_check():
+    """Verifica periodicamente a validade dos cookies"""
+    global last_cookie_check
+    while True:
+        try:
+            now = datetime.datetime.now()
+            if (now - last_cookie_check) > cookie_check_interval:
+                print("[INFO] Verificando validade dos cookies...")
+                refresh_youtube_cookies()
+                last_cookie_check = now
+        except Exception as e:
+            print(f"[ERRO] Falha na verificação de cookies: {str(e)}")
+        time.sleep(3600)  # Verificar a cada hora
+
 def get_fallback_cookies():
     """
     Tenta obter cookies do YouTube diretamente sem Selenium como fallback
