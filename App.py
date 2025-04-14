@@ -24,7 +24,8 @@ def download_video():
 
     cmd = [
     "python3", "-m", "yt_dlp",
-    "--cookies", "cookies.txt",  # <- aqui
+    "--cookies", "cookies.txt",
+    "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/123.0.0.0 Safari/537.36",
     "--format", "bestvideo+bestaudio/best",
     "--merge-output-format", "mp4",
     "--output", output_template,
@@ -35,6 +36,7 @@ def download_video():
     "--print", "%(title)s",
     url
 ]
+
 
 
     try:
