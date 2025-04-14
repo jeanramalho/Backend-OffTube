@@ -1,56 +1,26 @@
-FROM python:3.11-slim
+# Use uma imagem oficial do Python leve
+FROM python:3.10-slim
 
-# Configurar ambiente não interativo
-ENV DEBIAN_FRONTEND=noninteractive
-
-# Instalar dependências essenciais
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    wget gnupg ca-certificates unzip xvfb \
-    libglib2.0-0 libnss3 libfontconfig1 libxss1 \
-    libasound2 libxtst6 libgbm1 \
-    && rm -rf /var/lib/apt/lists/*
-
-# Instalar Chrome
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    google-chrome-stable \
-    fonts-liberation fonts-noto-color-emoji \
-    && rm -rf /var/lib/apt/lists/*
-
-# Instalar ChromeDriver compatível
-RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d '.' -f 1) \
-    && CHROMEDRIVER_VERSION=$(wget -qO- "https://chromedriver.storage.googleapis.com/LATEST_RELEASE_$CHROME_VERSION") \
-    && wget -q "https://chromedriver.storage.googleapis.com/$CHROMEDRIVER_VERSION/chromedriver_linux64.zip" \
-    && unzip chromedriver_linux64.zip -d /usr/bin \
-    && rm chromedriver_linux64.zip \
-    && chmod +x /usr/bin/chromedriver
-
-# Instalar FFmpeg
-RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
-
+# Define o diretório de trabalho no contêiner
 WORKDIR /app
 
+# Copia o arquivo de dependências para o contêiner
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
 
+# Instala as dependências
+RUN pip install --upgrade pip && pip install -r requirements.txt
+
+# Copia todo o código da aplicação para o contêiner
 COPY . .
 
-# Configurar permissões e ambiente
-RUN mkdir -p videos thumbnails \
-    && chmod 777 videos thumbnails
+# Cria as pastas para armazenar os vídeos e thumbnails (caso não sejam criadas pelo código)
+RUN mkdir -p videos thumbnails
 
-ENV PYTHONUNBUFFERED=1 \
-    DISPLAY=:99 \
-    CHROME_BIN=/usr/bin/google-chrome \
-    CHROME_PATH=/usr/bin/google-chrome \
-    PATH="/usr/bin:${PATH}"
+# Define a variável de ambiente PORT (o Render irá injetar sua própria variável, mas caso não seja definida, usa 5000)
+ENV PORT=5000
 
-EXPOSE ${PORT:-10000}
+# Expõe a porta que a aplicação usará
+EXPOSE $PORT
 
-# Script de inicialização melhorado
-RUN echo '#!/bin/bash\n\
-Xvfb :99 -screen 0 1024x768x24 > /dev/null 2>&1 &\n\
-sleep 2\n\
-python -u App.py' > /app/start.sh \
-    && chmod +x /app/start.sh
-
-CMD ["/app/start.sh"]
+# Comando para iniciar a aplicação
+CMD ["python", "app.py"]
