@@ -142,8 +142,15 @@ def handle_download():
 
 @app.route("/videos/<filename>", methods=["GET"])
 def serve_video(filename):
-    path = os.path.join(DOWNLOAD_FOLDER, filename)
-    return send_file(path) if os.path.exists(path) else (jsonify({"error": "Não encontrado"}), 404)
+    try:
+        video_path = os.path.join(DOWNLOAD_FOLDER, filename)
+        if not os.path.exists(video_path):
+            return jsonify({"error": "Vídeo não encontrado"}), 404
+            
+        return send_file(video_path, as_attachment=True)
+    except Exception as e:
+        logger.error(f"Erro ao servir vídeo: {str(e)}")
+        return jsonify({"error": "Erro ao servir vídeo"}), 500
 
 @app.route("/thumbnails/<filename>", methods=["GET"])
 def serve_thumbnail(filename):
