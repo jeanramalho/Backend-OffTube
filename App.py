@@ -6,6 +6,7 @@ from pytube import YouTube
 import logging
 import requests
 import time
+import ssl
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -13,6 +14,9 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app)
+
+# Configuração para desabilitar verificação SSL temporariamente
+ssl._create_default_https_context = ssl._create_unverified_context
 
 DOWNLOAD_FOLDER = "videos"
 THUMBNAIL_FOLDER = "thumbnails"
