@@ -7,6 +7,7 @@ from pathlib import Path
 import requests
 from bs4 import BeautifulSoup
 import re
+import time
 
 # Configurar logging
 logging.basicConfig(level=logging.INFO)
@@ -21,29 +22,64 @@ THUMBNAIL_FOLDER = "thumbnails"
 Path(DOWNLOAD_FOLDER).mkdir(exist_ok=True)
 Path(THUMBNAIL_FOLDER).mkdir(exist_ok=True)
 
-# Lista de instâncias do Invidious (podemos alternar entre elas se uma falhar)
-INVIDIOUS_INSTANCES = [
-    "https://invidious.snopyta.org",
-    "https://invidious.kavin.rocks",
-    "https://vid.puffyan.us"
-]
-
-def get_video_info(video_id):
-    for instance in INVIDIOUS_INSTANCES:
-        try:
-            url = f"{instance}/api/v1/videos/{video_id}"
-            response = requests.get(url)
-            if response.status_code == 200:
-                data = response.json()
-                return {
-                    "title": data.get("title", ""),
-                    "thumbnail_url": data.get("videoThumbnails", [{}])[0].get("url", ""),
-                    "formats": data.get("formatStreams", [])
-                }
-        except Exception as e:
-            logger.warning(f"Falha na instância {instance}: {str(e)}")
-            continue
-    raise Exception("Todas as instâncias falharam")
+def get_video_info(url):
+    try:
+        # Primeiro, obter a página de download
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+        }
+        
+        # Fazer a requisição inicial
+        response = requests.post(
+            'https://www.y2mate.com/mates/analyzeV2/ajax',
+            headers=headers,
+            data={
+                'url': url,
+                'q_auto': '0',
+                'ajax': '1'
+            }
+        )
+        
+        if response.status_code != 200:
+            raise Exception(f"Erro ao acessar y2mate: {response.status_code}")
+            
+        data = response.json()
+        if not data.get('status') == 'success':
+            raise Exception("Falha ao analisar vídeo")
+            
+        # Extrair informações do vídeo
+        video_id = data.get('vid')
+        title = data.get('title', '')
+        thumbnail_url = f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg"
+        
+        # Obter links de download
+        response = requests.post(
+            'https://www.y2mate.com/mates/convertV2/index',
+            headers=headers,
+            data={
+                'vid': video_id,
+                'k': data.get('links', {}).get('mp4', {}).get('auto', {}).get('k', '')
+            }
+        )
+        
+        if response.status_code != 200:
+            raise Exception(f"Erro ao obter links: {response.status_code}")
+            
+        data = response.json()
+        if not data.get('status') == 'success':
+            raise Exception("Falha ao obter links de download")
+            
+        download_url = data.get('dlink', '')
+        
+        return {
+            'title': title,
+            'thumbnail_url': thumbnail_url,
+            'download_url': download_url
+        }
+        
+    except Exception as e:
+        logger.error(f"Erro ao obter informações do vídeo: {str(e)}")
+        raise
 
 def download_video(video_id, video_info):
     try:
@@ -57,19 +93,13 @@ def download_video(video_id, video_info):
                     f.write(response.content)
                 logger.info("Thumbnail baixada com sucesso")
         
-        # Encontrar o melhor formato de vídeo
-        best_format = None
-        for fmt in video_info["formats"]:
-            if fmt.get("type", "").startswith("video/mp4"):
-                if not best_format or fmt.get("quality", "") > best_format.get("quality", ""):
-                    best_format = fmt
-        
-        if not best_format:
-            raise Exception("Nenhum formato MP4 disponível")
-        
         # Baixar o vídeo
-        video_url = best_format["url"]
-        response = requests.get(video_url, stream=True)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
+            'Referer': 'https://www.y2mate.com/'
+        }
+        
+        response = requests.get(video_info["download_url"], headers=headers, stream=True)
         if response.status_code == 200:
             video_path = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.mp4")
             with open(video_path, 'wb') as f:
@@ -77,8 +107,7 @@ def download_video(video_id, video_info):
                     if chunk:
                         f.write(chunk)
             return True, {
-                "title": video_info["title"],
-                "quality": best_format.get("quality", "")
+                "title": video_info["title"]
             }
         else:
             raise Exception(f"Erro ao baixar vídeo: {response.status_code}")
@@ -105,7 +134,7 @@ def handle_download():
         video_id = video_id.group(1)
         
         # Obter informações do vídeo
-        video_info = get_video_info(video_id)
+        video_info = get_video_info(url)
         
         # Baixar vídeo
         success, result = download_video(video_id, video_info)
