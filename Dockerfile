@@ -1,26 +1,23 @@
-# Use uma imagem oficial do Python leve
 FROM python:3.10-slim
 
-# Define o diretório de trabalho no contêiner
 WORKDIR /app
 
-# Copia o arquivo de dependências para o contêiner
+# Instalar dependências do sistema
+RUN apt-get update && apt-get install -y ffmpeg curl && rm -rf /var/lib/apt/lists/*
+
+# Instalar yt-dlp
+RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp \
+    && chmod +x /usr/local/bin/yt-dlp
+
+# Copiar arquivos do projeto
 COPY requirements.txt .
-
-# Instala as dependências
-RUN pip install --upgrade pip && pip install -r requirements.txt
-
-# Copia todo o código da aplicação para o contêiner
+RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 
-# Cria as pastas para armazenar os vídeos e thumbnails (caso não sejam criadas pelo código)
+# Criar pastas se não forem criadas em tempo de execução
 RUN mkdir -p videos thumbnails
 
-# Define a variável de ambiente PORT (o Render irá injetar sua própria variável, mas caso não seja definida, usa 5000)
 ENV PORT=5000
-
-# Expõe a porta que a aplicação usará
 EXPOSE $PORT
 
-# Comando para iniciar a aplicação
 CMD ["python", "app.py"]

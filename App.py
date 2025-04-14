@@ -1,26 +1,15 @@
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
-import os
-import uuid
-import re
-import requests
-from pytube import YouTube
+import os, uuid, subprocess
 from pathlib import Path
 
 app = Flask(__name__)
 CORS(app)
 
-# Pastas onde os vídeos e thumbnails serão armazenados
 DOWNLOAD_FOLDER = "videos"
 THUMBNAIL_FOLDER = "thumbnails"
-
-# Cria as pastas caso não existam
 Path(DOWNLOAD_FOLDER).mkdir(exist_ok=True)
 Path(THUMBNAIL_FOLDER).mkdir(exist_ok=True)
-
-def sanitize_filename(filename: str) -> str:
-    """Remove caracteres inválidos para nomes de arquivos."""
-    return re.sub(r'[\\/*?:"<>|]', "_", filename)
 
 @app.route("/download", methods=["POST"])
 def download_video():
@@ -29,97 +18,72 @@ def download_video():
     if not url:
         return jsonify({"error": "URL é obrigatória"}), 400
 
-    # Verifica se a URL parece ser do YouTube
-    if not any(domain in url for domain in ["youtube.com", "youtu.be"]):
-        return jsonify({"error": "URL inválida. Certifique-se que é do YouTube"}), 400
+    video_id = str(uuid.uuid4())
+    output_template = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.%(ext)s")
+    thumbnail_path = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
+
+    cmd = [
+        "yt-dlp",
+        "--format", "bestvideo+bestaudio/best",
+        "--merge-output-format", "mp4",
+        "--output", output_template,
+        "--write-thumbnail",
+        "--convert-thumbnails", "jpg",
+        "--no-playlist",
+        "--quiet",
+        "--print", "%(title)s",  # imprime título
+        url
+    ]
 
     try:
-        yt = YouTube(url)
-    except Exception as e:
-        return jsonify({"error": "Falha ao acessar o vídeo", "details": str(e)}), 500
+        print(f"Executando: {' '.join(cmd)}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            return jsonify({"error": "Erro ao baixar vídeo", "details": result.stderr}), 500
 
-    try:
-        # Seleciona a stream com maior resolução (progressive para ter áudio e vídeo juntos)
-        stream = yt.streams.get_highest_resolution()
-        if not stream:
-            return jsonify({"error": "Nenhuma stream encontrada para esse vídeo"}), 500
-
-        # Gerar um ID único que será usado para o arquivo e thumbnail
-        video_id = str(uuid.uuid4())
-        # Opcionalmente podemos usar o title do vídeo, mas é mais seguro gerar um ID
-        filename = f"{video_id}.mp4"
-        file_path = os.path.join(DOWNLOAD_FOLDER, filename)
-
-        # Realiza o download do vídeo
-        stream.download(output_path=DOWNLOAD_FOLDER, filename=filename)
-
-        # Baixar a thumbnail se disponível
-        thumbnail_url = yt.thumbnail_url
-        thumbnail_filename = f"{video_id}.jpg"
-        thumbnail_path = os.path.join(THUMBNAIL_FOLDER, thumbnail_filename)
-        if thumbnail_url:
-            thumb_response = requests.get(thumbnail_url, stream=True)
-            if thumb_response.status_code == 200:
-                with open(thumbnail_path, "wb") as f:
-                    for chunk in thumb_response.iter_content(chunk_size=1024):
-                        if chunk:
-                            f.write(chunk)
-
+        title = result.stdout.strip()
+        video_filename = f"{video_id}.mp4"
+        thumb_filename = f"{video_id}.jpg"
         response = {
             "success": True,
             "video_id": video_id,
-            "title": yt.title,
-            "filename": filename,
-            "download_url": f"/videos/{filename}",
-            "thumbnail_url": f"/thumbnails/{thumbnail_filename}" if os.path.exists(thumbnail_path) else None,
-            "duration": yt.length  # duração em segundos
+            "title": title,
+            "filename": video_filename,
+            "download_url": f"/videos/{video_filename}",
+            "thumbnail_url": f"/thumbnails/{thumb_filename}" if os.path.exists(os.path.join(THUMBNAIL_FOLDER, thumb_filename)) else None
         }
         return jsonify(response)
+    except subprocess.TimeoutExpired:
+        return jsonify({"error": "Tempo limite excedido"}), 504
     except Exception as e:
-        return jsonify({"error": "Erro ao processar o download", "details": str(e)}), 500
+        return jsonify({"error": "Erro interno", "details": str(e)}), 500
 
 @app.route("/videos/<filename>", methods=["GET"])
 def serve_video(filename):
-    video_path = os.path.join(DOWNLOAD_FOLDER, filename)
-    if os.path.exists(video_path):
-        return send_file(video_path)
-    return jsonify({"error": "Vídeo não encontrado"}), 404
+    path = os.path.join(DOWNLOAD_FOLDER, filename)
+    return send_file(path) if os.path.exists(path) else (jsonify({"error": "Não encontrado"}), 404)
 
 @app.route("/thumbnails/<filename>", methods=["GET"])
 def serve_thumbnail(filename):
-    thumb_path = os.path.join(THUMBNAIL_FOLDER, filename)
-    if os.path.exists(thumb_path):
-        return send_file(thumb_path)
-    return jsonify({"error": "Thumbnail não encontrada"}), 404
+    path = os.path.join(THUMBNAIL_FOLDER, filename)
+    return send_file(path) if os.path.exists(path) else (jsonify({"error": "Não encontrado"}), 404)
 
 @app.route("/delete/<video_id>", methods=["DELETE"])
 def delete_video(video_id):
-    """
-    Deleta o vídeo e a thumbnail usando o video_id (nome do arquivo gerado no download)
-    """
-    video_file = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.mp4")
-    thumb_file = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
-    
+    video_path = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.mp4")
+    thumb_path = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
     errors = []
-    # Tenta remover o vídeo
-    if os.path.exists(video_file):
+
+    for f in [video_path, thumb_path]:
         try:
-            os.remove(video_file)
+            if os.path.exists(f):
+                os.remove(f)
         except Exception as e:
-            errors.append(f"Erro ao deletar vídeo: {str(e)}")
-    else:
-        errors.append("Arquivo de vídeo não encontrado")
-    
-    # Tenta remover a thumbnail se existir
-    if os.path.exists(thumb_file):
-        try:
-            os.remove(thumb_file)
-        except Exception as e:
-            errors.append(f"Erro ao deletar thumbnail: {str(e)}")
-    
+            errors.append(str(e))
+
     if errors:
-        return jsonify({"error": "Problemas durante a remoção", "details": errors}), 500
-    return jsonify({"success": True, "message": "Vídeo e thumbnail removidos."})
+        return jsonify({"error": "Falha ao deletar arquivos", "details": errors}), 500
+    return jsonify({"success": True})
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
