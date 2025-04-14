@@ -374,6 +374,20 @@ def debug_info():
         return jsonify({"debug_info": system_info})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+    
+def is_auth_error(error_msg):
+    """Verifica se o erro é relacionado a autenticação/cookies"""
+    auth_keywords = [
+        "cookies", 
+        "login", 
+        "authentication", 
+        "private video", 
+        "sign in",
+        "account",
+        "restricted",
+        "HTTP Error 403"
+    ]
+    return any(keyword in error_msg.lower() for keyword in auth_keywords)
 
 @app.route("/download", methods=["POST"])  
 def download_video():
@@ -465,7 +479,7 @@ def download_video():
                 print(f"[ERRO] Falha ao baixar vídeo: {error_msg}")
                 
                 # Verificar se é erro de autenticação
-                if is_auth_error(error_msg):
+                if is_auth_error(str(error_msg)):  # Conversão explícita para string
                     print("[AVISO] Erro de autenticação detectado, tentando atualizar cookies...")
                     cookies_content = refresh_youtube_cookies()
                     if not cookies_content:

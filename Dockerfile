@@ -1,3 +1,4 @@
+ENV DEBIAN_FRONTEND=noninteractive
 FROM python:3.11-slim
 
 # Instalar dependências essenciais
@@ -8,10 +9,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Instalar Chrome
-RUN wget -q -O - https://dl-ssl.google.com/linux/linux_signing_key.pub | apt-key add - \
-    && echo "deb [arch=amd64] http://dl.google.com/linux/chrome/deb/ stable main" > /etc/apt/sources.list.d/google-chrome.list \
-    && apt-get update \
-    && apt-get install -y --no-install-recommends google-chrome-stable \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    google-chrome-stable \
+    fonts-liberation fonts-noto-color-emoji \
     && rm -rf /var/lib/apt/lists/*
 
 # Instalar ChromeDriver compatível
@@ -21,6 +21,11 @@ RUN CHROME_VERSION=$(google-chrome --version | awk '{print $3}' | cut -d '.' -f 
     && unzip chromedriver_linux64.zip -d /usr/bin \
     && rm chromedriver_linux64.zip \
     && chmod +x /usr/bin/chromedriver
+
+    driver.execute_cdp_cmd(
+        "Network.setUserAgentOverride",
+        {"userAgent": random.choice(USER_AGENTS)}
+    )
 
 # Instalar FFmpeg
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg && rm -rf /var/lib/apt/lists/*
