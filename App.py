@@ -22,20 +22,20 @@ def download_video():
     output_template = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.%(ext)s")
     thumbnail_path = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
 
-    cmd = [
-        "python3", 
-        "-m", 
-        "yt_dlp",
-        "--format", "bestvideo+bestaudio/best",
-        "--merge-output-format", "mp4",
-        "--output", output_template,
-        "--write-thumbnail",
-        "--convert-thumbnails", "jpg",
-        "--no-playlist",
-        "--quiet",
-        "--print", "%(title)s",  # imprime título
-        url
-    ]
+   cmd = [
+    "python3", "-m", "yt_dlp",
+    "--cookies", "cookies.txt",  # <- aqui
+    "--format", "bestvideo+bestaudio/best",
+    "--merge-output-format", "mp4",
+    "--output", output_template,
+    "--write-thumbnail",
+    "--convert-thumbnails", "jpg",
+    "--no-playlist",
+    "--quiet",
+    "--print", "%(title)s",
+    url
+]
+
 
     try:
         print(f"Executando: {' '.join(cmd)}")
