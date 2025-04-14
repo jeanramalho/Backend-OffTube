@@ -7,6 +7,14 @@ import uuid
 import re
 import tempfile
 from dotenv import load_dotenv
+from threading import Thread
+import datetime
+import time
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
 
 # Carregar variáveis de ambiente
 load_dotenv()
@@ -17,10 +25,186 @@ CORS(app)
 # Configurações
 DOWNLOAD_FOLDER = "videos"
 THUMBNAIL_FOLDER = "thumbnails"
+last_cookie_check = datetime.datetime.now()
+cookie_check_interval = datetime.timedelta(hours=6)  # Verificar a cada 6 horas
 
 # Criar pastas se não existirem
 os.makedirs(DOWNLOAD_FOLDER, exist_ok=True)
 os.makedirs(THUMBNAIL_FOLDER, exist_ok=True)
+
+def refresh_youtube_cookies():
+    """
+    Função para obter novos cookies do YouTube usando Selenium
+    """
+    print("[INFO] Iniciando refresh de cookies do YouTube...")
+    
+    # Credenciais do YouTube (recomendo obter de variáveis de ambiente)
+    youtube_email = os.environ.get("YOUTUBE_EMAIL")
+    youtube_password = os.environ.get("YOUTUBE_PASSWORD")
+    
+    if not youtube_email or not youtube_password:
+        print("[ERRO] Credenciais do YouTube não configuradas")
+        return None
+    
+    try:
+        # Configurar Chrome em modo headless
+        chrome_options = Options()
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_argument("--window-size=1920,1080")
+        chrome_options.add_argument("--user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        
+        driver = webdriver.Chrome(options=chrome_options)
+        wait = WebDriverWait(driver, 20)
+        
+        # Acessar YouTube
+        driver.get("https://accounts.google.com/signin")
+        
+        # Login com email
+        wait.until(EC.visibility_of_element_located((By.ID, "identifierId")))
+        driver.find_element(By.ID, "identifierId").send_keys(youtube_email)
+        driver.find_element(By.ID, "identifierNext").click()
+        
+        # Login com senha
+        wait.until(EC.visibility_of_element_located((By.NAME, "password")))
+        driver.find_element(By.NAME, "password").send_keys(youtube_password)
+        driver.find_element(By.ID, "passwordNext").click()
+        
+        # Esperar login completar
+        time.sleep(5)
+        
+        # Navegar para o YouTube
+        driver.get("https://www.youtube.com")
+        time.sleep(3)
+        
+        # Obter cookies
+        all_cookies = driver.get_cookies()
+        
+        # Formatar cookies para o formato que você usa
+        netscape_cookies = []
+        for cookie in all_cookies:
+            domain = cookie.get('domain', '')
+            if 'youtube' in domain or 'google' in domain:
+                http_only = "TRUE" if cookie.get('httpOnly', False) else "FALSE"
+                path = cookie.get('path', '/')
+                secure = 'TRUE' if cookie.get('secure', False) else 'FALSE'
+                expiry = str(int(cookie.get('expiry', 0)))
+                name = cookie.get('name', '')
+                value = cookie.get('value', '')
+                
+                netscape_cookies.append(f"{domain}\t{http_only}\t{path}\t{secure}\t{expiry}\t{name}\t{value}")
+                
+        cookies_content = '\n'.join(netscape_cookies)
+        
+        # Salvar na variável de ambiente
+        os.environ["YOUTUBE_COOKIES"] = cookies_content
+        
+        # Opcional: salvar em arquivo para persistência
+        try:
+            with open("youtube_cookies.txt", "w") as f:
+                f.write(cookies_content)
+        except Exception as e:
+            print(f"[AVISO] Não foi possível salvar cookies em arquivo: {str(e)}")
+            
+        print("[INFO] Cookies do YouTube atualizados com sucesso")
+        
+        # Fechar browser
+        driver.quit()
+        
+        return cookies_content
+        
+    except Exception as e:
+        print(f"[ERRO] Falha ao atualizar cookies: {str(e)}")
+        if 'driver' in locals():
+            driver.quit()
+        return None
+
+def is_auth_error(error_text):
+    """Verifica se o erro está relacionado à autenticação"""
+    auth_errors = [
+        "Sign in to confirm you're not a bot",
+        "This video is private",
+        "This video is only available to Music Premium members",
+        "This video requires payment",
+        "Please sign in to view this video",
+        "Sign in to YouTube"
+    ]
+    
+    return any(err in error_text for err in auth_errors)
+
+def background_cookie_check():
+    """Thread de fundo para verificar cookies periodicamente"""
+    global last_cookie_check
+    
+    while True:
+        now = datetime.datetime.now()
+        
+        # Verificar se é hora de atualizar
+        if now - last_cookie_check > cookie_check_interval:
+            print(f"[INFO] Verificação periódica de cookies: {now}")
+            try:
+                # Testar se cookies ainda são válidos com uma requisição simples
+                test_url = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"  # Vídeo popular para teste
+                
+                cookies_content = os.environ.get("YOUTUBE_COOKIES", "")
+                if not cookies_content:
+                    print("[AVISO] Cookies não encontrados, obtendo novos cookies...")
+                    refresh_youtube_cookies()
+                    last_cookie_check = now
+                    continue
+                
+                # Criar arquivo temporário de cookies para o teste
+                with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.txt') as temp_cookies:
+                    temp_cookies.write("# Netscape HTTP Cookie File\n")
+                    temp_cookies.write("# https://curl.se/docs/http-cookies.html\n")
+                    temp_cookies.write("# This file was generated by OffTube! Edit at your own risk.\n\n")
+                    temp_cookies.write(cookies_content)
+                    temp_cookies_path = temp_cookies.name
+                
+                # Executar yt-dlp apenas para verificar título (teste rápido)
+                test_cmd = [
+                    "yt-dlp",
+                    "--cookies", temp_cookies_path,
+                    "--skip-download",
+                    "--get-title",
+                    test_url
+                ]
+                
+                test_result = subprocess.run(
+                    test_cmd,
+                    capture_output=True,
+                    text=True,
+                    timeout=30
+                )
+                
+                # Limpar arquivo temporário
+                if os.path.exists(temp_cookies_path):
+                    os.unlink(temp_cookies_path)
+                
+                # Verificar se houve erro de autenticação
+                if test_result.returncode != 0 or is_auth_error(test_result.stderr):
+                    print("[AVISO] Cookies expirados, atualizando...")
+                    refresh_youtube_cookies()
+                else:
+                    print("[INFO] Cookies ainda válidos, próxima verificação em 6 horas")
+                
+                last_cookie_check = now
+                
+            except Exception as e:
+                print(f"[ERRO] Falha na verificação de cookies: {str(e)}")
+            
+        # Esperar 30 minutos antes da próxima verificação
+        time.sleep(1800)
+
+def update_ytdlp():
+    """Função para atualizar yt-dlp"""
+    try:
+        subprocess.run(["pip", "install", "--upgrade", "yt-dlp"], check=True)
+        print("[INFO] yt-dlp atualizado com sucesso")
+    except Exception as e:
+        print(f"[ERRO] Falha ao atualizar yt-dlp: {str(e)}")
 
 @app.route("/download", methods=["POST"])
 def download_video():
@@ -31,6 +215,14 @@ def download_video():
         return jsonify({"error": "URL is required"}), 400
 
     try:
+        # Verificação inicial de cookies
+        cookies_content = os.environ.get("YOUTUBE_COOKIES", "")
+        if not cookies_content:
+            print("[AVISO] Cookies não encontrados, tentando obter novos cookies")
+            cookies_content = refresh_youtube_cookies()
+            if not cookies_content:
+                return jsonify({"error": "Cookies do YouTube não configurados no servidor"}), 500
+
         video_id = str(uuid.uuid4())
         output_template = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.%(ext)s")
         thumbnail_path = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
@@ -42,13 +234,6 @@ def download_video():
         if not re.match(r'^https?://(?:www\.)?(?:youtube\.com|youtu\.be)/', url):
             print(f"[ERRO] URL inválida: {url}")
             return jsonify({"error": "URL do YouTube inválida"}), 400
-
-        # Criar arquivo temporário de cookies
-        cookies_content = os.environ.get("YOUTUBE_COOKIES", "")
-        
-        if not cookies_content:
-            print("[AVISO] Variável de ambiente YOUTUBE_COOKIES não encontrada")
-            return jsonify({"error": "Cookies do YouTube não configurados no servidor"}), 500
             
         temp_cookies_path = None
         try:
@@ -76,7 +261,7 @@ def download_video():
                                 value = parts[6]
                                 
                                 # Filtrar apenas cookies do YouTube
-                                if not any(d in domain for d in ['.youtube.com', 'youtube.com']):
+                                if not any(d in domain for d in ['.youtube.com', 'youtube.com', '.google.com', 'google.com']):
                                     continue
                                 
                                 # Formatar linha no padrão Netscape
@@ -100,7 +285,6 @@ def download_video():
                                 
                                 formatted_line = f"{domain}\t{flag}\t{path}\t{secure}\t{expiration}\t{name}\t{value}\n"
                                 temp_cookies.write(formatted_line)
-                                print(f"[DEBUG] Cookie formatado: {formatted_line.strip()}")
                         except Exception as e:
                             print(f"[AVISO] Erro ao processar cookie: {line} - {str(e)}")
                             continue
@@ -172,6 +356,7 @@ def download_video():
             
             video_info = None
             last_error = None
+            cookies_refreshed = False
             
             for method in extraction_methods:
                 try:
@@ -196,6 +381,39 @@ def download_video():
                     else:
                         last_error = info_result.stderr
                         print(f"[AVISO] Falha no método de extração {method}: {info_result.stderr}")
+                        
+                        # Verificar se é erro de autenticação/cookies
+                        if is_auth_error(info_result.stderr):
+                            if not cookies_refreshed:
+                                print("[AVISO] Detectado erro de cookies, tentando atualizar...")
+                                new_cookies = refresh_youtube_cookies()
+                                if new_cookies:
+                                    cookies_content = new_cookies
+                                    cookies_refreshed = True
+                                    # Recriar arquivo de cookies com novos cookies
+                                    if temp_cookies_path and os.path.exists(temp_cookies_path):
+                                        os.unlink(temp_cookies_path)
+                                        
+                                    with tempfile.NamedTemporaryFile(mode='w+', delete=False, suffix='.txt') as temp_cookies:
+                                        # Adicionar cabeçalho Netscape
+                                        temp_cookies.write("# Netscape HTTP Cookie File\n")
+                                        temp_cookies.write("# https://curl.se/docs/http-cookies.html\n")
+                                        temp_cookies.write("# This file was generated by OffTube! Edit at your own risk.\n\n")
+                                        
+                                        # Adicionar cookies
+                                        for line in cookies_content.split('\n'):
+                                            if line.strip() and not line.startswith('#'):
+                                                temp_cookies.write(line + '\n')
+                                                
+                                        temp_cookies_path = temp_cookies.name
+                                        
+                                    print("[INFO] Tentando novamente com cookies atualizados...")
+                                    
+                                    # Atualizar cookies no comando
+                                    base_opts[1] = temp_cookies_path
+                                    
+                                    continue  # Tentar novamente o mesmo método com novos cookies
+                                
                 except Exception as e:
                     last_error = str(e)
                     print(f"[AVISO] Falha no método de extração {method}: {str(e)}")
@@ -292,7 +510,65 @@ def serve_thumbnail(filename):
 
 @app.route("/status")
 def status():
-    return jsonify({"status": "online", "cookies_configured": bool(os.environ.get("YOUTUBE_COOKIES"))})
+    # Verificar se o yt-dlp está funcionando corretamente
+    try:
+        yt_dlp_version = subprocess.run(
+            ["yt-dlp", "--version"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        ).stdout.strip()
+        
+        # Verificar se os cookies foram configurados corretamente
+        cookies_configured = bool(os.environ.get("YOUTUBE_COOKIES"))
+        youtube_credentials = bool(os.environ.get("YOUTUBE_EMAIL") and os.environ.get("YOUTUBE_PASSWORD"))
+        
+        return jsonify({
+            "status": "online",
+            "version": {
+                "yt-dlp": yt_dlp_version
+            },
+            "cookies_configured": cookies_configured,
+            "youtube_credentials_configured": youtube_credentials,
+            "last_cookie_check": last_cookie_check.isoformat()
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "degraded",
+            "error": str(e),
+            "cookies_configured": bool(os.environ.get("YOUTUBE_COOKIES"))
+        })
+
+@app.route("/refresh-cookies", methods=["POST"])
+def manual_refresh_cookies():
+    """Endpoint para atualizar cookies manualmente"""
+    try:
+        api_key = request.headers.get("X-API-Key")
+        if not api_key or api_key != os.environ.get("API_KEY"):
+            return jsonify({"error": "Acesso não autorizado"}), 401
+            
+        cookies = refresh_youtube_cookies()
+        if cookies:
+            return jsonify({"status": "success", "message": "Cookies atualizados com sucesso"})
+        else:
+            return jsonify({"error": "Falha ao atualizar cookies"}), 500
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
+    # Tentar atualizar yt-dlp no início
+    update_ytdlp()
+    
+    # Verificar cookies no início
+    cookies_content = os.environ.get("YOUTUBE_COOKIES", "")
+    if not cookies_content:
+        print("[AVISO] Cookies não encontrados, tentando obter novos cookies...")
+        refresh_youtube_cookies()
+    
+    # Iniciar thread de verificação de cookies
+    cookie_checker = Thread(target=background_cookie_check)
+    cookie_checker.daemon = True  # Encerrar quando o programa principal encerrar
+    cookie_checker.start()
+    
+    # Iniciar aplicativo Flask
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
