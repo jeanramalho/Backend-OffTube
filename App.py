@@ -1,6 +1,17 @@
 # Modificações no app.py
-
+from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
+import os
+import sys
+import subprocess
 import json
+import uuid
+import re
+import tempfile
+from dotenv import load_dotenv
+from threading import Thread
+import datetime
+import time
 import base64
 import requests
 import random
@@ -8,6 +19,23 @@ import shutil
 import socket
 from urllib.parse import urlparse
 from pathlib import Path
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+
+# Carregar variáveis de ambiente
+load_dotenv()
+
+app = Flask(__name__)
+CORS(app)
+
+# Configurações
+DOWNLOAD_FOLDER = "videos"
+THUMBNAIL_FOLDER = "thumbnails"
+last_cookie_check = datetime.datetime.now()
+cookie_check_interval = datetime.timedelta(hours=6)  # Verificar a cada 6 horas
 
 # Adicionar variáveis de controle para melhorar gestão do estado
 cookie_refresh_attempts = 0
