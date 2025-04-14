@@ -27,13 +27,13 @@ def download_video():
     "--cookies", "cookies.txt",  # <- aqui
     "--format", "bestvideo+bestaudio/best",
     "--merge-output-format", "mp4",
-    "--output", "output_template",
+    "--output", output_template,
     "--write-thumbnail",
     "--convert-thumbnails", "jpg",
     "--no-playlist",
     "--quiet",
     "--print", "%(title)s",
-    "url"
+    url
 ]
 
 
