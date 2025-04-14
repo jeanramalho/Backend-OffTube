@@ -4,3 +4,6 @@ yt-dlp==2024.4.9
 certifi==2024.2.2
 pyOpenSSL==24.0.0
 cryptography==42.0.2
+requests==2.31.0
+ffmpeg-python==0.2.0
+pytube==15.0.0

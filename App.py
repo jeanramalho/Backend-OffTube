@@ -1,19 +1,57 @@
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
-import os, uuid, subprocess, ssl
+import os, uuid
 from pathlib import Path
-import certifi
+import yt_dlp
+import requests
+from pytube import YouTube
 
 app = Flask(__name__)
 CORS(app)
-
-# Configuração do contexto SSL
-ssl._create_default_https_context = ssl._create_unverified_context
 
 DOWNLOAD_FOLDER = "videos"
 THUMBNAIL_FOLDER = "thumbnails"
 Path(DOWNLOAD_FOLDER).mkdir(exist_ok=True)
 Path(THUMBNAIL_FOLDER).mkdir(exist_ok=True)
+
+def download_with_yt_dlp(url, video_id):
+    ydl_opts = {
+        'format': 'best[ext=mp4]',
+        'outtmpl': os.path.join(DOWNLOAD_FOLDER, f'{video_id}.%(ext)s'),
+        'writethumbnail': True,
+        'convertthumbnails': 'jpg',
+        'quiet': True,
+        'no_warnings': True,
+        'extract_flat': False,
+        'nocheckcertificate': True,
+        'extractor_args': {'youtube': {'player_client': ['android']}},
+        'cookiesfrombrowser': ('chrome',),
+    }
+    
+    try:
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=True)
+            return True, info
+    except Exception as e:
+        return False, str(e)
+
+def download_with_pytube(url, video_id):
+    try:
+        yt = YouTube(url)
+        video = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
+        if video:
+            video.download(output_path=DOWNLOAD_FOLDER, filename=f"{video_id}.mp4")
+            
+            # Baixar thumbnail
+            thumbnail_url = yt.thumbnail_url
+            response = requests.get(thumbnail_url)
+            if response.status_code == 200:
+                with open(os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg"), 'wb') as f:
+                    f.write(response.content)
+            return True, {"title": yt.title}
+        return False, "Nenhum stream disponível"
+    except Exception as e:
+        return False, str(e)
 
 @app.route("/download", methods=["POST"])
 def download_video():
@@ -23,62 +61,38 @@ def download_video():
         return jsonify({"error": "URL é obrigatória"}), 400
 
     video_id = str(uuid.uuid4())
-    output_template = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.%(ext)s")
-    thumbnail_path = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
-
-    cmd = [
-        "python3", "-m", "yt_dlp",
-        "--cookies", "cookies.txt",
-        "--user-agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36",
-        "--format", "bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best",
-        "--merge-output-format", "mp4",
-        "--output", output_template,
-        "--write-thumbnail",
-        "--convert-thumbnails", "jpg",
-        "--no-playlist",
-        "--quiet",
-        "--no-check-certificate",
-        "--extractor-args", "youtube:player_client=android",
-        url
-    ]
-
-    try:
-        print(f"Executando: {' '.join(cmd)}")
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-        
-        if result.returncode != 0:
-            error_msg = result.stderr if result.stderr else result.stdout
-            return jsonify({
-                "error": "Erro ao baixar vídeo",
-                "details": error_msg
-            }), 500
-
-        # Verifica se o arquivo foi criado
-        video_filename = f"{video_id}.mp4"
-        video_path = os.path.join(DOWNLOAD_FOLDER, video_filename)
-        
-        if not os.path.exists(video_path):
-            return jsonify({
-                "error": "Vídeo não foi baixado corretamente",
-                "details": "Arquivo não encontrado após download"
-            }), 500
-
-        thumb_filename = f"{video_id}.jpg"
-        response = {
-            "success": True,
-            "video_id": video_id,
-            "filename": video_filename,
-            "download_url": f"/videos/{video_filename}",
-            "thumbnail_url": f"/thumbnails/{thumb_filename}" if os.path.exists(os.path.join(THUMBNAIL_FOLDER, thumb_filename)) else None
-        }
-        return jsonify(response)
-    except subprocess.TimeoutExpired:
-        return jsonify({"error": "Tempo limite excedido"}), 504
-    except Exception as e:
+    
+    # Primeiro tenta com yt-dlp
+    success, result = download_with_yt_dlp(url, video_id)
+    
+    # Se falhar, tenta com pytube
+    if not success:
+        success, result = download_with_pytube(url, video_id)
+    
+    if not success:
         return jsonify({
-            "error": "Erro interno",
-            "details": str(e)
+            "error": "Erro ao baixar vídeo",
+            "details": str(result)
         }), 500
+
+    video_filename = f"{video_id}.mp4"
+    video_path = os.path.join(DOWNLOAD_FOLDER, video_filename)
+    
+    if not os.path.exists(video_path):
+        return jsonify({
+            "error": "Vídeo não foi baixado corretamente",
+            "details": "Arquivo não encontrado após download"
+        }), 500
+
+    thumb_filename = f"{video_id}.jpg"
+    response = {
+        "success": True,
+        "video_id": video_id,
+        "filename": video_filename,
+        "download_url": f"/videos/{video_filename}",
+        "thumbnail_url": f"/thumbnails/{thumb_filename}" if os.path.exists(os.path.join(THUMBNAIL_FOLDER, thumb_filename)) else None
+    }
+    return jsonify(response)
 
 @app.route("/videos/<filename>", methods=["GET"])
 def serve_video(filename):
