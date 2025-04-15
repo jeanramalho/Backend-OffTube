@@ -64,40 +64,54 @@ def get_video_info_rapidapi(url):
 
         # A resposta é uma lista, pegamos o primeiro item
         if not isinstance(data, list) or len(data) == 0:
-            raise Exception("Formato de resposta inválido (lista vazia ou não lista)")
+            raise Exception("Formato de resposta inválido")
         
-        main_data = data[0]  # Acessar o primeiro item da lista
-
-        title = main_data.get("meta", {}).get("title", f"video_{video_id}")
-        thumbnail_url = main_data.get("pictureUrl", f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg")
+        main_data = data[0]  # Primeiro item da lista
         urls = main_data.get("urls", [])
 
-        # Encontrar o melhor formato MP4 com áudio (evitar formatos apenas de áudio)
-        best_quality = 0
+        target_quality = 720  # Prioridade máxima
+        best_below_target = 0
         download_url = None
-        
+
         for entry in urls:
-            if entry.get("extension") == "mp4" and entry.get("audio", True):
+            # Filtrar apenas MP4 com áudio (evitar streams sem áudio)
+            if entry.get("extension") != "mp4" or entry.get("audio", False) is False:
+                continue
+
+            # Extrair qualidade numérica
+            quality = entry.get("qualityNumber")  # Usar campo numérico se existir
+            if not quality:
                 try:
+                    # Caso o campo seja string (ex: "720p"), extrair números
                     quality_str = entry.get("quality", "0")
-                    quality = int(re.sub(r'\D', '', quality_str))  # Extrai números da qualidade
-                    
-                    if quality > best_quality:
-                        best_quality = quality
-                        download_url = entry.get("url")
-                        
-                        # Corrigir URL relativa (se necessário)
-                        if download_url.startswith("/"):
-                            download_url = "https://youtube-quick-video-downloader-free-api-downlaod-all-video.p.rapidapi.com" + download_url
+                    quality = int(re.sub(r'\D', '', quality_str))
                 except:
                     continue
 
+            # Verificar se é exatamente 720p
+            if quality == target_quality:
+                download_url = entry.get("url")
+                break  # Prioriza 720p e interrompe a busca
+
+            # Se não for 720p, busca a melhor qualidade abaixo
+            elif quality < target_quality and quality > best_below_target:
+                best_below_target = quality
+                download_url = entry.get("url")
+
+        # Se não encontrou 720p, usa a melhor abaixo
+        if not download_url and best_below_target > 0:
+            logger.info(f"Usando qualidade alternativa: {best_below_target}p")
+
+        # Corrigir URL relativa (ex: "/convert?...")
+        if download_url and download_url.startswith("/"):
+            download_url = "https://youtube-quick-video-downloader-free-api-downlaod-all-video.p.rapidapi.com" + download_url
+
         if not download_url:
-            raise Exception("URL de download não encontrada na resposta")
+            raise Exception("Nenhum link de download válido encontrado")
 
         return {
-            'title': title,
-            'thumbnail_url': thumbnail_url,
+            'title': main_data.get("meta", {}).get("title", f"video_{video_id}"),
+            'thumbnail_url': main_data.get("pictureUrl", f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg"),
             'download_url': download_url,
             'video_id': video_id
         }
