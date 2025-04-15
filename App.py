@@ -2,509 +2,406 @@ import os
 import re
 import logging
 import requests
-from flask import Flask, request, jsonify, send_file
+import subprocess
+import json
+import time
+import uuid
+from flask import Flask, request, jsonify, send_file, redirect
 from flask_cors import CORS
 from pathlib import Path
 from dotenv import load_dotenv
-import time
-import random
+from google.cloud import storage
 
-# Carregar variáveis de ambiente, se houver
+# Load environment variables
 load_dotenv()
 
-# Configuração de logging
+# Logging configuration
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app)
 
-# Diretórios para armazenar vídeos e thumbnails
-DOWNLOAD_FOLDER = "videos"
-THUMBNAIL_FOLDER = "thumbnails"
+# Directories for temporary storage
+TEMP_FOLDER = "/tmp"
+DOWNLOAD_FOLDER = os.path.join(TEMP_FOLDER, "videos")
+THUMBNAIL_FOLDER = os.path.join(TEMP_FOLDER, "thumbnails")
 Path(DOWNLOAD_FOLDER).mkdir(exist_ok=True)
 Path(THUMBNAIL_FOLDER).mkdir(exist_ok=True)
 
-# Lista de user agents para alternar
-USER_AGENTS = [
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Safari/605.1.15",
-    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:123.0) Gecko/20100101 Firefox/123.0",
-    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1",
-    "Mozilla/5.0 (iPad; CPU OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1"
-]
+# Google Cloud Storage configuration
+GCS_BUCKET_NAME = os.environ.get("GCS_BUCKET_NAME", "backend-offtube-videos")
+storage_client = storage.Client()
+try:
+    bucket = storage_client.get_bucket(GCS_BUCKET_NAME)
+    logger.info(f"Connected to GCS bucket: {GCS_BUCKET_NAME}")
+except Exception as e:
+    logger.error(f"Failed to connect to GCS bucket: {str(e)}")
+    bucket = None
 
 def extract_youtube_id(url):
-    """Extrai o ID do vídeo a partir de uma URL do YouTube."""
+    """Extract YouTube video ID from URL."""
     pattern = r"(?:v=|\/)([0-9A-Za-z_-]{11}).*"
     m = re.search(pattern, url)
     return m.group(1) if m else None
 
-def get_video_info_option1(url):
-    """
-    Obtém informações do vídeo via RapidAPI Option1.
-    Endpoint: youtube-quick-video-downloader-free-api-downlaod-all-video.p.rapidapi.com
-    Retorna um dicionário com title, thumbnail_url, download_url, video_id e quality.
-    Prioriza stream 720p ou a melhor abaixo.
-    """
-    api_url = "https://youtube-quick-video-downloader-free-api-downlaod-all-video.p.rapidapi.com/videodownload.php"
-    headers = {
-        "x-rapidapi-key": "e675e37fe3msh28737c9013eca79p1ed09cjsn7b8a4c446ef0",
-        "x-rapidapi-host": "youtube-quick-video-downloader-free-api-downlaod-all-video.p.rapidapi.com"
-    }
-    params = {"url": url}
-    resp = requests.get(api_url, headers=headers, params=params, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-    if not isinstance(data, list) or len(data) == 0:
-        raise Exception("Option1: Resposta em formato inválido.")
-    item = data[0]
-    if "urls" not in item or not item["urls"]:
-        raise Exception("Option1: Nenhuma URL de download encontrada.")
-    urls = item["urls"]
-    target = 720
-    chosen_url = None
-    chosen_quality = 0
-    for entry in urls:
-        if entry.get("extension") != "mp4" and entry.get("name") != "MP4":
-            continue
-        quality_str = entry.get("quality") or entry.get("subName")
-        if not quality_str:
-            continue
-        try:
-            quality = int(re.sub(r"\D", "", quality_str))
-        except Exception:
-            continue
-        logger.info(f"Option1: Encontrou stream com qualidade {quality}p")
-        if quality == target:
-            chosen_url = entry["url"]
-            chosen_quality = target
-            break
-        elif quality < target and quality > chosen_quality:
-            chosen_quality = quality
-            chosen_url = entry["url"]
-    if not chosen_url:
-        raise Exception("Option1: Nenhuma URL de download válida encontrada.")
-    title = item.get("title") or f"video_{extract_youtube_id(url)}"
-    thumb = item.get("pictureUrl") or f"https://i.ytimg.com/vi/{extract_youtube_id(url)}/maxresdefault.jpg"
-    return {
-        "title": title,
-        "thumbnail_url": thumb,
-        "download_url": chosen_url,
-        "video_id": extract_youtube_id(url),
-        "quality": chosen_quality
-    }
+def file_exists_in_gcs(file_path):
+    """Check if a file exists in Google Cloud Storage."""
+    if not bucket:
+        return False
+    blob = bucket.blob(file_path)
+    return blob.exists()
 
-def get_video_info_option2(url):
-    """
-    Obtém informações do vídeo via RapidAPI Option2.
-    Endpoint: youtube-media-downloader.p.rapidapi.com
-    Retorna um dicionário com title, thumbnail_url, download_url, video_id e quality.
-    """
-    video_id = extract_youtube_id(url)
-    if not video_id:
-        raise Exception("Option2: URL inválida.")
-    api_url = "https://youtube-media-downloader.p.rapidapi.com/v2/video/details"
-    headers = {
-        "x-rapidapi-key": "e675e37fe3msh28737c9013eca79p1ed09cjsn7b8a4c446ef0",
-        "x-rapidapi-host": "youtube-media-downloader.p.rapidapi.com"
-    }
-    params = {"videoId": video_id}
-    resp = requests.get(api_url, headers=headers, params=params, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-    if not data.get("status"):
-        raise Exception("Option2: API retornou erro.")
-    videos = data.get("videos", {}).get("items", [])
-    if not videos:
-        raise Exception("Option2: Nenhuma stream encontrada.")
-    target = 720
-    chosen_url = None
-    chosen_quality = 0
-    for vid in videos:
-        quality_str = vid.get("quality")
-        if not quality_str:
-            continue
-        try:
-            quality = int(re.sub(r"\D", "", quality_str))
-        except Exception:
-            continue
-        logger.info(f"Option2: Encontrou stream com qualidade {quality}p")
-        if quality == target:
-            chosen_url = vid["url"]
-            chosen_quality = target
-            break
-        elif quality < target and quality > chosen_quality:
-            chosen_quality = quality
-            chosen_url = vid["url"]
-    if not chosen_url:
-        raise Exception("Option2: Nenhuma URL de download válida encontrada.")
-    title = data.get("title") or f"video_{video_id}"
-    thumbs = data.get("thumbnails", [])
-    thumb_url = thumbs[0]["url"] if thumbs else f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg"
-    return {
-        "title": title,
-        "thumbnail_url": thumb_url,
-        "download_url": chosen_url,
-        "video_id": video_id,
-        "quality": chosen_quality
-    }
+def upload_to_gcs(local_path, gcs_path):
+    """Upload a file to Google Cloud Storage."""
+    if not bucket:
+        logger.error("No GCS bucket available")
+        return False
+    try:
+        blob = bucket.blob(gcs_path)
+        blob.upload_from_filename(local_path)
+        logger.info(f"Uploaded {local_path} to gs://{GCS_BUCKET_NAME}/{gcs_path}")
+        return True
+    except Exception as e:
+        logger.error(f"Error uploading to GCS: {str(e)}")
+        return False
 
-def get_video_info_option3(url):
-    """
-    Obtém informações do vídeo via RapidAPI Option3.
-    Endpoint: youtube-video-download-info.p.rapidapi.com
-    Retorna um dicionário com title, thumbnail_url, download_url, video_id e quality.
-    """
-    video_id = extract_youtube_id(url)
-    if not video_id:
-        raise Exception("Option3: URL inválida.")
-    api_url = "https://youtube-video-download-info.p.rapidapi.com/dl"
-    headers = {
-        "x-rapidapi-key": "e675e37fe3msh28737c9013eca79p1ed09cjsn7b8a4c446ef0",
-        "x-rapidapi-host": "youtube-video-download-info.p.rapidapi.com"
-    }
-    params = {"id": video_id}
-    resp = requests.get(api_url, headers=headers, params=params, timeout=30)
-    resp.raise_for_status()
-    data = resp.json()
-    if not data.get("status") == "ok":
-        raise Exception("Option3: API retornou erro.")
+def download_from_gcs(gcs_path, local_path):
+    """Download a file from Google Cloud Storage."""
+    if not bucket:
+        logger.error("No GCS bucket available")
+        return False
+    try:
+        blob = bucket.blob(gcs_path)
+        blob.download_to_filename(local_path)
+        logger.info(f"Downloaded gs://{GCS_BUCKET_NAME}/{gcs_path} to {local_path}")
+        return True
+    except Exception as e:
+        logger.error(f"Error downloading from GCS: {str(e)}")
+        return False
+
+def get_gcs_signed_url(gcs_path, expires_in_seconds=3600):
+    """Get a signed URL for a file in Google Cloud Storage."""
+    if not bucket:
+        logger.error("No GCS bucket available")
+        return None
+    try:
+        blob = bucket.blob(gcs_path)
+        url = blob.generate_signed_url(
+            version="v4",
+            expiration=time.time() + expires_in_seconds,
+            method="GET"
+        )
+        return url
+    except Exception as e:
+        logger.error(f"Error generating signed URL: {str(e)}")
+        return None
+
+def download_with_ytdlp(url, video_id):
+    """Download video using yt-dlp CLI tool."""
+    logger.info(f"Starting download with yt-dlp: {url}")
     
-    formats = data.get("link", [])
-    if not formats:
-        raise Exception("Option3: Nenhuma stream encontrada.")
+    # Create temporary paths
+    temp_id = str(uuid.uuid4())
+    temp_video_path = os.path.join(TEMP_FOLDER, f"{temp_id}.mp4")
+    temp_thumb_path = os.path.join(TEMP_FOLDER, f"{temp_id}.jpg")
     
-    target = 720
-    chosen_url = None
-    chosen_quality = 0
+    final_video_path = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.mp4")
+    final_thumb_path = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
     
-    for fmt in formats:
-        q = fmt.get("quality")
-        if not q or not isinstance(q, str):
-            continue
+    # Get video info first
+    try:
+        info_command = [
+            "yt-dlp", 
+            "--dump-json",
+            "--no-playlist",
+            url
+        ]
         
-        # Tenta extrair a qualidade do formato (ex: "720p", "360p")
-        try:
-            quality = int(re.sub(r"\D", "", q))
-        except Exception:
-            continue
+        result = subprocess.run(info_command, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            logger.error(f"yt-dlp info failed: {result.stderr}")
+            return False, f"yt-dlp info failed: {result.stderr}", None
             
-        logger.info(f"Option3: Encontrou stream com qualidade {quality}p")
+        video_info = json.loads(result.stdout)
+        title = video_info.get('title', f"video_{video_id}")
         
-        # Verifica se é mp4
-        if "mp4" not in fmt.get("format", "").lower() and "mp4" not in fmt.get("type", "").lower():
-            continue
+        # Download video
+        download_command = [
+            "yt-dlp",
+            "-f", "bestvideo[height<=720][ext=mp4]+bestaudio[ext=m4a]/best[height<=720][ext=mp4]/best[ext=mp4]/best",
+            "--merge-output-format", "mp4",
+            "-o", temp_video_path,
+            "--write-thumbnail",
+            "--convert-thumbnails", "jpg",
+            "--thumbnail-template", temp_thumb_path,
+            "--no-playlist",
+            url
+        ]
+        
+        download_result = subprocess.run(download_command, capture_output=True, text=True, timeout=300)
+        if download_result.returncode != 0:
+            logger.error(f"yt-dlp download failed: {download_result.stderr}")
+            return False, f"yt-dlp download failed: {download_result.stderr}", None
+        
+        # Check if the files were downloaded successfully
+        if os.path.exists(temp_video_path) and os.path.getsize(temp_video_path) > 0:
+            # Move files to final location
+            os.rename(temp_video_path, final_video_path)
+            if os.path.exists(temp_thumb_path):
+                os.rename(temp_thumb_path, final_thumb_path)
             
-        if quality == target:
-            chosen_url = fmt["url"]
-            chosen_quality = target
-            break
-        elif quality < target and quality > chosen_quality:
-            chosen_quality = quality
-            chosen_url = fmt["url"]
-    
-    if not chosen_url:
-        raise Exception("Option3: Nenhuma URL de download válida encontrada.")
-    
-    title = data.get("title") or f"video_{video_id}"
-    thumb_url = data.get("thumb") or f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg"
-    
-    return {
-        "title": title,
-        "thumbnail_url": thumb_url,
-        "download_url": chosen_url,
-        "video_id": video_id,
-        "quality": chosen_quality
-    }
-
-def download_from_url(download_url, video_id, title, referer_url):
-    """
-    Tenta baixar o arquivo utilizando a URL obtida via RapidAPI.
-    Utiliza uma sessão de requests com headers que simulam uma requisição real.
-    Implementa várias estratégias de retry e alternância de user agents.
-    """
-    logger.info(f"Download iniciando (primeiros 100 caracteres): {download_url[:100]}...")
-    video_path = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.mp4")
-    thumbnail_path = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
-    
-    # Tentativas de download com diferentes configurações
-    attempts = 3
-    for attempt in range(attempts):
-        try:
-            # Cria uma nova sessão para cada tentativa
-            session = requests.Session()
+            logger.info(f"Download completed (size: {os.path.getsize(final_video_path)/1024/1024:.2f} MB)")
             
-            # Alterna entre diferentes User Agents
-            user_agent = random.choice(USER_AGENTS)
-            
-            # Adiciona variação aos headers para cada tentativa
-            headers = {
-                "User-Agent": user_agent,
-                "Referer": referer_url,
-                "Origin": "https://www.youtube.com",
-                "Accept": "*/*",
-                "Accept-Language": "en-US,en;q=0.9",
-                "Accept-Encoding": "gzip, deflate, br",
-                "Connection": "keep-alive",
-                "Sec-Fetch-Mode": "cors",
-                "Sec-Fetch-Dest": "video",
-                "Sec-Fetch-Site": "cross-site",
-                "Range": "bytes=0-",
-                "DNT": "1"
-            }
-            
-            # Adiciona cookies aleatórios para simular comportamento de navegador
-            if attempt > 0:
-                headers["Cookie"] = f"YSC={random.randint(100000, 999999)}; VISITOR_INFO1_LIVE={random.randint(100000, 999999)}"
+            # Upload to GCS if bucket is available
+            if bucket:
+                gcs_video_path = f"videos/{video_id}.mp4"
+                gcs_thumb_path = f"thumbnails/{video_id}.jpg"
+                upload_to_gcs(final_video_path, gcs_video_path)
                 
-            session.headers.update(headers)
+                if os.path.exists(final_thumb_path):
+                    upload_to_gcs(final_thumb_path, gcs_thumb_path)
             
-            # Pequena pausa entre tentativas
-            if attempt > 0:
-                time.sleep(2)
-                logger.info(f"Tentativa {attempt+1} de {attempts} com User-Agent: {user_agent[:30]}...")
+            return True, title, final_thumb_path if os.path.exists(final_thumb_path) else None
+        else:
+            return False, "File was not downloaded or is empty", None
             
-            # Executa o download com streaming para evitar carregar todo o arquivo na memória
-            resp = session.get(download_url, stream=True, allow_redirects=True, timeout=60)
-            resp.raise_for_status()
-            
-            # Verifica se o Content-Type é de vídeo
-            content_type = resp.headers.get('Content-Type', '')
-            if not content_type.startswith('video/') and not 'audio/' in content_type:
-                logger.warning(f"Conteúdo não parece ser vídeo: {content_type}")
-                if attempt == attempts - 1:  # Na última tentativa, aceitamos qualquer conteúdo
-                    logger.warning("Última tentativa: aceitando conteúdo mesmo sem verificação de tipo")
-                else:
-                    continue
-            
-            # Salva o arquivo em partes
-            with open(video_path, "wb") as f:
-                downloaded = 0
-                chunk_size = 8192
-                for chunk in resp.iter_content(chunk_size=chunk_size):
-                    if chunk:
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        # Log de progresso a cada 5MB
-                        if downloaded % (5 * 1024 * 1024) < chunk_size:
-                            logger.info(f"Download em progresso: {downloaded / (1024 * 1024):.2f} MB")
-            
-            # Verifica se o arquivo foi baixado corretamente
-            if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
-                logger.info(f"Download concluído (tamanho: {os.path.getsize(video_path)/1024/1024:.2f} MB)")
-                
-                # Tenta baixar a thumbnail
-                try:
-                    thumb_session = requests.Session()
-                    thumb_session.headers.update({
-                        "User-Agent": random.choice(USER_AGENTS),
-                        "Referer": "https://www.youtube.com/"
-                    })
-                    
-                    # Tenta várias resoluções de thumbnail
-                    thumb_options = [
-                        f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg",
-                        f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg",
-                        f"https://i.ytimg.com/vi/{video_id}/mqdefault.jpg",
-                        f"https://i.ytimg.com/vi/{video_id}/sddefault.jpg"
-                    ]
-                    
-                    for thumb_url in thumb_options:
-                        try:
-                            thumb_resp = thumb_session.get(thumb_url, timeout=15)
-                            if thumb_resp.status_code == 200:
-                                with open(thumbnail_path, "wb") as f:
-                                    f.write(thumb_resp.content)
-                                logger.info(f"Thumbnail baixada com sucesso de {thumb_url}")
-                                break
-                        except Exception as e:
-                            logger.warning(f"Erro ao baixar thumbnail {thumb_url}: {str(e)}")
-                            continue
-                except Exception as e:
-                    logger.warning(f"Erro geral ao baixar thumbnail: {str(e)}")
-                
-                return True, title
-            else:
-                logger.warning(f"Tentativa {attempt+1}: Arquivo baixado está vazio ou inexistente")
-                if os.path.exists(video_path):
-                    os.remove(video_path)
-        except requests.exceptions.RequestException as e:
-            logger.warning(f"Tentativa {attempt+1}: Erro de requisição: {str(e)}")
-            if os.path.exists(video_path):
-                os.remove(video_path)
-        except Exception as e:
-            logger.warning(f"Tentativa {attempt+1}: Erro geral: {str(e)}")
-            if os.path.exists(video_path):
-                os.remove(video_path)
-    
-    logger.error("Todas as tentativas de download falharam")
-    return False, "Todas as tentativas de download falharam após múltiplas estratégias"
-
-def try_all_download_options(url):
-    """
-    Tenta todas as opções de download em sequência até encontrar uma que funcione.
-    Retorna as informações do vídeo ou levanta uma exceção.
-    """
-    errors = []
-    
-    # Tentativa 1: Option1
-    try:
-        logger.info("Tentando RapidAPI Option1...")
-        info = get_video_info_option1(url)
-        logger.info(f"Option1 retornou qualidade {info.get('quality', 0)}p")
-        return info
+    except subprocess.TimeoutExpired:
+        logger.error("yt-dlp process timed out")
+        return False, "Download process timed out", None
     except Exception as e:
-        msg = f"RapidAPI Option1 falhou: {str(e)}"
-        logger.warning(msg)
-        errors.append(msg)
-    
-    # Tentativa 2: Option2
-    try:
-        logger.info("Tentando RapidAPI Option2...")
-        info = get_video_info_option2(url)
-        logger.info(f"Option2 retornou qualidade {info.get('quality', 0)}p")
-        return info
-    except Exception as e:
-        msg = f"RapidAPI Option2 falhou: {str(e)}"
-        logger.warning(msg)
-        errors.append(msg)
-    
-    # Tentativa 3: Option3
-    try:
-        logger.info("Tentando RapidAPI Option3...")
-        info = get_video_info_option3(url)
-        logger.info(f"Option3 retornou qualidade {info.get('quality', 0)}p")
-        return info
-    except Exception as e:
-        msg = f"RapidAPI Option3 falhou: {str(e)}"
-        logger.warning(msg)
-        errors.append(msg)
-    
-    # Se chegou aqui, todas as opções falharam
-    raise Exception(f"Todas as APIs falharam: {'; '.join(errors)}")
+        logger.error(f"Error using yt-dlp: {str(e)}")
+        return False, f"Error using yt-dlp: {str(e)}", None
 
 @app.route("/download", methods=["POST"])
 def handle_download():
     try:
         if not request.is_json:
-            return jsonify({"error": "Requisição deve conter JSON válido"}), 400
+            return jsonify({"error": "Request must contain valid JSON"}), 400
+        
         data = request.get_json()
         url = data.get("url")
+        
         if not url:
-            return jsonify({"error": "URL é obrigatória"}), 400
+            return jsonify({"error": "URL is required"}), 400
+        
         video_id = extract_youtube_id(url)
         if not video_id:
-            return jsonify({"error": "URL do YouTube inválida"}), 400
-
-        # Se o vídeo já estiver salvo, retorna os dados
-        video_path = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.mp4")
-        if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
+            return jsonify({"error": "Invalid YouTube URL"}), 400
+        
+        # Define paths
+        gcs_video_path = f"videos/{video_id}.mp4"
+        gcs_thumb_path = f"thumbnails/{video_id}.jpg"
+        local_video_path = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.mp4")
+        local_thumb_path = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
+        
+        # Check if files already exist in GCS
+        if bucket and file_exists_in_gcs(gcs_video_path):
+            # Get video info
             try:
                 yt_info_url = f"https://www.youtube.com/oembed?url={url}&format=json"
                 info_resp = requests.get(yt_info_url, timeout=10)
                 title = info_resp.json().get("title", f"video_{video_id}") if info_resp.status_code == 200 else f"video_{video_id}"
             except:
                 title = f"video_{video_id}"
+            
+            # Generate signed URLs
+            video_url = get_gcs_signed_url(gcs_video_path)
+            thumb_url = get_gcs_signed_url(gcs_thumb_path) if file_exists_in_gcs(gcs_thumb_path) else None
+            
             return jsonify({
                 "success": True,
-                "message": "Vídeo já existe no sistema",
+                "message": "Video already exists",
+                "video_id": video_id,
+                "filename": f"{video_id}.mp4",
+                "download_url": video_url or f"/videos/{video_id}.mp4",
+                "thumbnail_url": thumb_url or (f"/thumbnails/{video_id}.jpg" if file_exists_in_gcs(gcs_thumb_path) else None),
+                "title": title
+            })
+        
+        # Check if files exist locally
+        if os.path.exists(local_video_path) and os.path.getsize(local_video_path) > 0:
+            try:
+                yt_info_url = f"https://www.youtube.com/oembed?url={url}&format=json"
+                info_resp = requests.get(yt_info_url, timeout=10)
+                title = info_resp.json().get("title", f"video_{video_id}") if info_resp.status_code == 200 else f"video_{video_id}"
+            except:
+                title = f"video_{video_id}"
+                
+            # Upload to GCS if available
+            if bucket:
+                upload_to_gcs(local_video_path, gcs_video_path)
+                if os.path.exists(local_thumb_path):
+                    upload_to_gcs(local_thumb_path, gcs_thumb_path)
+                
+                # Generate signed URLs
+                video_url = get_gcs_signed_url(gcs_video_path)
+                thumb_url = get_gcs_signed_url(gcs_thumb_path) if os.path.exists(local_thumb_path) else None
+                
+                return jsonify({
+                    "success": True,
+                    "message": "Video already exists locally, uploaded to cloud",
+                    "video_id": video_id,
+                    "filename": f"{video_id}.mp4",
+                    "download_url": video_url or f"/videos/{video_id}.mp4",
+                    "thumbnail_url": thumb_url or (f"/thumbnails/{video_id}.jpg" if os.path.exists(local_thumb_path) else None),
+                    "title": title
+                })
+            
+            return jsonify({
+                "success": True,
+                "message": "Video already exists locally",
                 "video_id": video_id,
                 "filename": f"{video_id}.mp4",
                 "download_url": f"/videos/{video_id}.mp4",
-                "thumbnail_url": f"/thumbnails/{video_id}.jpg" if os.path.exists(os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")) else None,
+                "thumbnail_url": f"/thumbnails/{video_id}.jpg" if os.path.exists(local_thumb_path) else None,
                 "title": title
             })
-
-        # Estratégia 1: Tenta obter informações de todas as APIs em sequência
-        try:
-            info = try_all_download_options(url)
-        except Exception as e:
-            return jsonify({"error": "Falha na obtenção de informações do vídeo", "details": str(e)}), 500
-
-        # Tentativa de download
-        download_url = info.get("download_url")
-        title = info.get("title", f"video_{video_id}")
-        thumb_url = info.get("thumbnail_url")
-        referer_url = url
-
-        # Tenta fazer o download com a URL obtida
-        success, result = download_from_url(download_url, video_id, title, referer_url)
+        
+        # Download the video
+        success, result, thumb_path = download_with_ytdlp(url, video_id)
+        
         if not success:
-            logger.warning(f"Download falhou: {result}")
-            return jsonify({"error": "Download falhou", "details": result}), 500
-
-        # Tenta baixar a thumbnail informada pela API, se disponível, como fallback
-        thumb_path = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
-        try:
-            if thumb_url and not os.path.exists(thumb_path):
-                r = requests.get(thumb_url, timeout=15)
-                if r.status_code == 200:
-                    with open(thumb_path, "wb") as f:
-                        f.write(r.content)
-                    logger.info("Thumbnail baixada a partir das informações da API.")
-        except Exception as e:
-            logger.warning(f"Erro ao baixar thumbnail da API: {str(e)}")
-            
+            logger.error(f"Download failed: {result}")
+            return jsonify({"error": "Download failed", "details": result}), 500
+        
+        title = result if isinstance(result, str) else f"video_{video_id}"
+        
+        # Generate URLs based on where the file is stored
+        video_url = None
+        thumb_url = None
+        
+        if bucket:
+            video_url = get_gcs_signed_url(gcs_video_path)
+            if file_exists_in_gcs(gcs_thumb_path):
+                thumb_url = get_gcs_signed_url(gcs_thumb_path)
+        
         return jsonify({
             "success": True,
             "video_id": video_id,
             "filename": f"{video_id}.mp4",
-            "download_url": f"/videos/{video_id}.mp4",
-            "thumbnail_url": f"/thumbnails/{video_id}.jpg" if os.path.exists(thumb_path) else None,
+            "download_url": video_url or f"/videos/{video_id}.mp4",
+            "thumbnail_url": thumb_url or (f"/thumbnails/{video_id}.jpg" if thumb_path else None),
             "title": title
         })
     except Exception as e:
-        logger.error(f"Erro interno: {str(e)}")
-        return jsonify({"error": "Erro interno", "details": str(e)}), 500
+        logger.error(f"Internal error: {str(e)}")
+        return jsonify({"error": "Internal error", "details": str(e)}), 500
 
 @app.route("/videos/<filename>", methods=["GET"])
 def serve_video(filename):
     try:
-        path = os.path.join(DOWNLOAD_FOLDER, filename)
-        if not os.path.exists(path):
-            return jsonify({"error": "Vídeo não encontrado"}), 404
-        return send_file(path, as_attachment=True)
+        video_id = filename.split('.')[0]
+        gcs_path = f"videos/{filename}"
+        local_path = os.path.join(DOWNLOAD_FOLDER, filename)
+        
+        # Check if the file exists in GCS
+        if bucket and file_exists_in_gcs(gcs_path):
+            # Generate a signed URL and redirect to it
+            signed_url = get_gcs_signed_url(gcs_path)
+            if signed_url:
+                return redirect(signed_url)
+        
+        # If not in GCS or failed to get signed URL, check locally
+        if not os.path.exists(local_path):
+            # Try to download from GCS
+            if bucket:
+                download_success = download_from_gcs(gcs_path, local_path)
+                if not download_success:
+                    return jsonify({"error": "Video not found"}), 404
+            else:
+                return jsonify({"error": "Video not found"}), 404
+        
+        return send_file(local_path, as_attachment=True)
     except Exception as e:
-        logger.error(f"Erro ao servir vídeo: {str(e)}")
-        return jsonify({"error": "Erro ao servir vídeo"}), 500
+        logger.error(f"Error serving video: {str(e)}")
+        return jsonify({"error": "Error serving video"}), 500
 
 @app.route("/thumbnails/<filename>", methods=["GET"])
 def serve_thumbnail(filename):
     try:
-        path = os.path.join(THUMBNAIL_FOLDER, filename)
-        if not os.path.exists(path):
-            return jsonify({"error": "Thumbnail não encontrada"}), 404
-        return send_file(path)
+        gcs_path = f"thumbnails/{filename}"
+        local_path = os.path.join(THUMBNAIL_FOLDER, filename)
+        
+        # Check if the file exists in GCS
+        if bucket and file_exists_in_gcs(gcs_path):
+            # Generate a signed URL and redirect to it
+            signed_url = get_gcs_signed_url(gcs_path)
+            if signed_url:
+                return redirect(signed_url)
+        
+        # If not in GCS or failed to get signed URL, check locally
+        if not os.path.exists(local_path):
+            # Try to download from GCS
+            if bucket:
+                download_success = download_from_gcs(gcs_path, local_path)
+                if not download_success:
+                    return jsonify({"error": "Thumbnail not found"}), 404
+            else:
+                return jsonify({"error": "Thumbnail not found"}), 404
+        
+        return send_file(local_path)
     except Exception as e:
-        logger.error(f"Erro ao servir thumbnail: {str(e)}")
-        return jsonify({"error": "Erro ao servir thumbnail"}), 500
+        logger.error(f"Error serving thumbnail: {str(e)}")
+        return jsonify({"error": "Error serving thumbnail"}), 500
 
 @app.route("/delete/<video_id>", methods=["DELETE"])
 def delete_video(video_id):
     video_path = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.mp4")
     thumb_path = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
+    gcs_video_path = f"videos/{video_id}.mp4"
+    gcs_thumb_path = f"thumbnails/{video_id}.jpg"
+    
     errors = []
+    
+    # Delete from GCS
+    if bucket:
+        try:
+            if file_exists_in_gcs(gcs_video_path):
+                bucket.blob(gcs_video_path).delete()
+            if file_exists_in_gcs(gcs_thumb_path):
+                bucket.blob(gcs_thumb_path).delete()
+        except Exception as e:
+            errors.append(f"GCS deletion error: {str(e)}")
+    
+    # Delete local files
     for f in [video_path, thumb_path]:
         try:
             if os.path.exists(f):
                 os.remove(f)
         except Exception as e:
             errors.append(str(e))
+    
     if errors:
-        return jsonify({"error": "Falha ao deletar arquivos", "details": errors}), 500
+        return jsonify({"error": "Failed to delete some files", "details": errors}), 500
+    
     return jsonify({"success": True})
 
 @app.route("/health", methods=["GET"])
 def health_check():
-    """Endpoint para verificar a saúde da aplicação"""
+    """Endpoint to check the health of the application"""
     return jsonify({
         "status": "ok",
         "timestamp": time.time(),
-        "version": "1.1.0"
+        "version": "1.2.0",
+        "gcs_connected": bucket is not None
+    })
+
+@app.route("/", methods=["GET"])
+def root():
+    """Root endpoint"""
+    return jsonify({
+        "message": "YouTube Downloader API",
+        "status": "running",
+        "endpoints": {
+            "/download": "POST - Download a YouTube video",
+            "/videos/<filename>": "GET - Get a video file",
+            "/thumbnails/<filename>": "GET - Get a thumbnail image",
+            "/delete/<video_id>": "DELETE - Delete a video",
+            "/health": "GET - Check API health"
+        }
     })
 
 if __name__ == "__main__":
-    port = int(os.environ.get("PORT", 5000))
+    port = int(os.environ.get("PORT", 8080))
     app.run(host="0.0.0.0", port=port)

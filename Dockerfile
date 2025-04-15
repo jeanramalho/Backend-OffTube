@@ -1,27 +1,28 @@
-# Use uma imagem oficial do Python leve
+# Use Python 3.10 slim image
 FROM python:3.10-slim
 
-# Define o diretório de trabalho
+# Set working directory
 WORKDIR /app
 
-# Instale dependências do sistema
+# Install system dependencies
 RUN apt-get update && apt-get install -y ffmpeg curl && rm -rf /var/lib/apt/lists/*
 
-# Instale yt-dlp
+# Install yt-dlp and keep it updated
 RUN curl -L https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp -o /usr/local/bin/yt-dlp && \
-    chmod +x /usr/local/bin/yt-dlp
+    chmod +x /usr/local/bin/yt-dlp && \
+    mkdir -p /root/.cache/yt-dlp
 
-# Copie os arquivos do projeto
+# Copy project files
 COPY requirements.txt .
 RUN pip install --upgrade pip && pip install --no-cache-dir -r requirements.txt
 COPY . .
 
-# Crie as pastas para armazenar vídeos e thumbnails
-RUN mkdir -p videos thumbnails
+# Create temporary directories
+RUN mkdir -p /tmp/videos /tmp/thumbnails
 
-# Configure a porta; o Cloud Run define a variável PORT
+# Configure port
 ENV PORT=8080
 EXPOSE 8080
 
-# Inicia o servidor; use gunicorn para produção (opcional)
-CMD ["gunicorn", "--bind", "0.0.0.0:8080", "app:app"]
+# Command to run
+CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--timeout", "300", "--workers", "2", "app:app"]
