@@ -6,292 +6,205 @@ from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 from pathlib import Path
 from dotenv import load_dotenv
-from pytube import YouTube
-from pytube.exceptions import RegexMatchError, VideoUnavailable
 
-# Carrega variáveis de ambiente
+# Carrega variáveis de ambiente (se houver)
 load_dotenv()
 
-# Configura o logging
+# Configuração de logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app)
 
-# Configurar pastas onde os vídeos e thumbnails serão salvos
+# Pastas de armazenamento
 DOWNLOAD_FOLDER = "videos"
 THUMBNAIL_FOLDER = "thumbnails"
 Path(DOWNLOAD_FOLDER).mkdir(exist_ok=True)
 Path(THUMBNAIL_FOLDER).mkdir(exist_ok=True)
 
-# Rota teste para verificar se a API está online
-@app.route("/", methods=["GET"])
-def index():
-    return jsonify({"status": "API is running"})
-
 def extract_youtube_id(url):
-    """Extrai o ID do vídeo a partir de uma URL do YouTube"""
-    pattern = r'(?:v=|\/)([0-9A-Za-z_-]{11}).*'
-    match = re.search(pattern, url)
-    if not match:
-        return None
-    return match.group(1)
+    """Extrai o ID do vídeo a partir de uma URL do YouTube."""
+    pattern = r"(?:v=|\/)([0-9A-Za-z_-]{11}).*"
+    m = re.search(pattern, url)
+    return m.group(1) if m else None
+
+def get_video_info_option1(url):
+    """
+    Obtém informações do vídeo via RapidAPI Option1.
+    Endpoint: youtube-quick-video-downloader-free-api-downlaod-all-video.p.rapidapi.com
+    Retorna um dicionário com title, thumbnail_url, download_url e video_id.
+    Prioriza qualidade 720p ou, se não disponível, a melhor abaixo de 720.
+    """
+    api_url = "https://youtube-quick-video-downloader-free-api-downlaod-all-video.p.rapidapi.com/videodownload.php"
+    headers = {
+        "x-rapidapi-key": "e675e37fe3msh28737c9013eca79p1ed09cjsn7b8a4c446ef0",
+        "x-rapidapi-host": "youtube-quick-video-downloader-free-api-downlaod-all-video.p.rapidapi.com"
+    }
+    params = {"url": url}
+    resp = requests.get(api_url, headers=headers, params=params, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+    if not isinstance(data, list) or len(data) == 0:
+        raise Exception("Option1: Resposta em formato inválido.")
+    item = data[0]
+    if "urls" not in item or not item["urls"]:
+        raise Exception("Option1: Nenhuma URL de download encontrada.")
+    urls = item["urls"]
+    target = 720
+    chosen_url = None
+    below_url = None
+    below_quality = 0
+    for entry in urls:
+        if entry.get("extension") != "mp4" and entry.get("name") != "MP4":
+            continue
+        quality_str = entry.get("quality") or entry.get("subName")
+        if not quality_str:
+            continue
+        try:
+            quality = int(re.sub(r"\D", "", quality_str))
+        except:
+            continue
+        logger.info(f"Option1: Encontrou stream com qualidade {quality}p")
+        if quality == target:
+            chosen_url = entry["url"]
+            break
+        elif quality < target and quality > below_quality:
+            below_quality = quality
+            below_url = entry["url"]
+    if not chosen_url:
+        chosen_url = below_url
+    if not chosen_url:
+        raise Exception("Option1: Nenhuma URL de download válida encontrada.")
+    title = item.get("title") or f"video_{extract_youtube_id(url)}"
+    thumb = item.get("pictureUrl") or f"https://i.ytimg.com/vi/{extract_youtube_id(url)}/maxresdefault.jpg"
+    return {
+        "title": title,
+        "thumbnail_url": thumb,
+        "download_url": chosen_url,
+        "video_id": extract_youtube_id(url)
+    }
+
+def get_video_info_option2(url):
+    """
+    Obtém informações do vídeo via RapidAPI Option2.
+    Endpoint: youtube-media-downloader.p.rapidapi.com
+    Requer o parâmetro videoId extraído da URL.
+    Retorna um dicionário com title, thumbnail_url, download_url e video_id.
+    """
+    video_id = extract_youtube_id(url)
+    if not video_id:
+        raise Exception("Option2: URL inválida.")
+    api_url = "https://youtube-media-downloader.p.rapidapi.com/v2/video/details"
+    headers = {
+        "x-rapidapi-key": "e675e37fe3msh28737c9013eca79p1ed09cjsn7b8a4c446ef0",
+        "x-rapidapi-host": "youtube-media-downloader.p.rapidapi.com"
+    }
+    params = {"videoId": video_id}
+    resp = requests.get(api_url, headers=headers, params=params, timeout=30)
+    resp.raise_for_status()
+    data = resp.json()
+    if not data.get("status"):
+        raise Exception("Option2: API retornou erro.")
+    videos = data.get("videos", {}).get("items", [])
+    if not videos:
+        raise Exception("Option2: Nenhuma stream encontrada.")
+    target = 720
+    chosen_url = None
+    below_url = None
+    below_quality = 0
+    for vid in videos:
+        quality_str = vid.get("quality")
+        if not quality_str:
+            continue
+        try:
+            quality = int(re.sub(r"\D", "", quality_str))
+        except:
+            continue
+        logger.info(f"Option2: Encontrou stream com qualidade {quality}p")
+        if quality == target:
+            chosen_url = vid["url"]
+            break
+        elif quality < target and quality > below_quality:
+            below_quality = quality
+            below_url = vid["url"]
+    if not chosen_url:
+        chosen_url = below_url
+    if not chosen_url:
+        raise Exception("Option2: Nenhuma URL de download válida encontrada.")
+    title = data.get("title") or f"video_{video_id}"
+    thumbs = data.get("thumbnails", [])
+    thumb_url = thumbs[0]["url"] if thumbs else f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg"
+    return {
+        "title": title,
+        "thumbnail_url": thumb_url,
+        "download_url": chosen_url,
+        "video_id": video_id
+    }
 
 def download_from_url(download_url, video_id, title):
     """
-    Faz o download do vídeo usando a URL obtida via RapidAPI.
-    O vídeo é salvo em DOWNLOAD_FOLDER com o nome <video_id>.mp4.
-    Também tenta baixar a thumbnail do vídeo.
+    Faz o download do arquivo utilizando a URL obtida.
+    Salva o vídeo em <DOWNLOAD_FOLDER>/<video_id>.mp4.
+    Tenta baixar a thumbnail padrão também.
     """
-    logger.info(f"Iniciando download direto da URL (primeiros 100 caracteres): {download_url[:100]}...")
+    logger.info(f"Download iniciando (mostrando primeiros 100 caracteres): {download_url[:100]}...")
     video_path = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.mp4")
     thumbnail_path = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
-    
     try:
-        # Se a URL for relativa, completa com a base RapidAPI
-        if download_url.startswith("/"):
-            base_url = "https://youtube-quick-video-downloader-free-api-downlaod-all-video.p.rapidapi.com"
-            download_url = base_url + download_url
-        
-        # Headers ajustados para simular uma requisição feita por um navegador
         headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Accept': '*/*',
-            'Accept-Language': 'en-US,en;q=0.9',
-            'Referer': 'https://www.youtube.com/',
-            'Origin': 'https://www.youtube.com',
-            'Sec-Fetch-Dest': 'video',
-            'Sec-Fetch-Mode': 'no-cors'
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+            "Referer": "https://www.youtube.com/",
+            "Origin": "https://www.youtube.com"
         }
-        
-        response = requests.get(download_url, headers=headers, stream=True, allow_redirects=True)
-        response.raise_for_status()
-        logger.info(f"Resposta do download direto: Status {response.status_code}, Content-Type: {response.headers.get('Content-Type')}, Content-Length: {response.headers.get('Content-Length', 'Desconhecido')}")
-        
-        # Grava o conteúdo em arquivo
-        with open(video_path, 'wb') as f:
-            for chunk in response.iter_content(chunk_size=8192):
+        resp = requests.get(download_url, headers=headers, stream=True, allow_redirects=True, timeout=60)
+        resp.raise_for_status()
+        with open(video_path, "wb") as f:
+            for chunk in resp.iter_content(chunk_size=8192):
                 if chunk:
                     f.write(chunk)
-        
-        # Verifica se o arquivo foi criado e possui conteúdo
         if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
-            logger.info(f"Download concluído com sucesso. Tamanho: {os.path.getsize(video_path)/1024/1024:.2f} MB")
-            # Tenta baixar a thumbnail
+            logger.info(f"Download concluído com sucesso (tamanho: {os.path.getsize(video_path)/1024/1024:.2f} MB)")
+            # Tenta baixar a thumbnail padrão do YouTube
             try:
-                thumbnail_url = f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg"
-                thumb_response = requests.get(thumbnail_url)
-                if thumb_response.status_code != 200:
-                    thumbnail_url = f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg"
-                    thumb_response = requests.get(thumbnail_url)
-                if thumb_response.status_code == 200:
-                    with open(thumbnail_path, 'wb') as f:
-                        f.write(thumb_response.content)
-                    logger.info("Thumbnail baixada com sucesso")
+                thumb_resp = requests.get(f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg", timeout=30)
+                if thumb_resp.status_code != 200:
+                    thumb_resp = requests.get(f"https://i.ytimg.com/vi/{video_id}/hqdefault.jpg", timeout=30)
+                if thumb_resp.status_code == 200:
+                    with open(thumbnail_path, "wb") as f:
+                        f.write(thumb_resp.content)
+                    logger.info("Thumbnail baixada com sucesso.")
             except Exception as e:
                 logger.warning(f"Erro ao baixar thumbnail: {str(e)}")
             return True, title
         else:
-            raise Exception("Arquivo baixado está vazio ou não existe")
+            raise Exception("Arquivo baixado está vazio ou inexistente")
     except Exception as e:
-        logger.error(f"Erro no download direto: {str(e)}")
+        logger.error(f"Erro no download: {str(e)}")
         return False, str(e)
-
-def download_using_pytube(url, video_id):
-    """
-    Realiza o download do vídeo utilizando o pytube.
-    Tenta primeiro obter uma stream com resolução 720p; caso não encontre,
-    seleciona a melhor qualidade disponível abaixo de 720p.
-    """
-    logger.info(f"Iniciando download com pytube para {url}")
-    video_path = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.mp4")
-    thumbnail_path = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
-    
-    try:
-        yt = YouTube(url)
-        # Baixar thumbnail pelo pytube
-        if yt.thumbnail_url:
-            logger.info(f"Baixando thumbnail do pytube: {yt.thumbnail_url}")
-            thumb_response = requests.get(yt.thumbnail_url)
-            if thumb_response.status_code == 200:
-                with open(thumbnail_path, 'wb') as f:
-                    f.write(thumb_response.content)
-        
-        # Tenta stream em 720p
-        logger.info("Procurando stream de 720p")
-        stream = yt.streams.filter(progressive=True, file_extension='mp4', res="720p").first()
-        if not stream:
-            logger.info("Stream de 720p não encontrada, procurando alternativas abaixo de 720p")
-            all_streams = yt.streams.filter(progressive=True, file_extension='mp4')
-            quality_streams = []
-            for s in all_streams:
-                if s.resolution:
-                    try:
-                        quality = int(s.resolution.replace("p", ""))
-                        quality_streams.append((quality, s))
-                    except Exception:
-                        continue
-            quality_streams.sort(reverse=True, key=lambda x: x[0])
-            stream = None
-            for quality, s in quality_streams:
-                if quality <= 720:
-                    stream = s
-                    logger.info(f"Selecionada stream com resolução: {quality}p")
-                    break
-            if not stream and quality_streams:
-                stream = quality_streams[0][1]
-                logger.info(f"Usando a melhor stream disponível: {quality_streams[0][0]}p")
-        
-        if not stream:
-            raise Exception("Nenhuma stream disponível para download")
-        
-        logger.info(f"Baixando vídeo em {stream.resolution}")
-        stream.download(output_path=DOWNLOAD_FOLDER, filename=f"{video_id}.mp4")
-        
-        if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
-            logger.info(f"Download com pytube concluído com sucesso. Tamanho: {os.path.getsize(video_path)/1024/1024:.2f} MB")
-            return True, {"title": yt.title or f"Video {video_id}"}
-        else:
-            raise Exception("Arquivo baixado está vazio ou não existe")
-    except Exception as e:
-        logger.error(f"Erro no download com pytube: {str(e)}")
-        return False, str(e)
-
-def get_video_info_rapidapi(url):
-    """
-    Obtém informações do vídeo via RapidAPI.
-    Extrai o título, URL da thumbnail e, principalmente, a URL de download.
-    Prioriza vídeo em 720p ou, se não houver, a melhor qualidade disponível abaixo de 720p.
-    """
-    try:
-        video_id = extract_youtube_id(url)
-        if not video_id:
-            raise Exception("URL do YouTube inválida")
-
-        logger.info(f"Obtendo informações para o vídeo com ID: {video_id}")
-
-        api_url = "https://youtube-quick-video-downloader-free-api-downlaod-all-video.p.rapidapi.com/videodownload.php"
-        querystring = {"url": url}
-        headers = {
-            "X-RapidAPI-Key": os.getenv("RAPIDAPI_KEY", "sua_chave_aqui"),
-            "X-RapidAPI-Host": "youtube-quick-video-downloader-free-api-downlaod-all-video.p.rapidapi.com"
-        }
-
-        response = requests.get(api_url, headers=headers, params=querystring)
-        response.raise_for_status()
-        logger.info("Resposta da API RapidAPI recebida")
-        
-        try:
-            data = response.json()
-        except Exception as e:
-            logger.error(f"Erro ao decodificar JSON da RapidAPI: {str(e)}")
-            raise Exception("Resposta da API não é um JSON válido")
-        
-        if not isinstance(data, list) or len(data) == 0:
-            raise Exception("Formato de resposta inválido")
-        
-        main_data = data[0]
-        if "urls" not in main_data or not main_data["urls"]:
-            raise Exception("Nenhuma URL de download encontrada na resposta")
-            
-        urls = main_data.get("urls", [])
-        logger.info(f"Encontradas {len(urls)} opções de URLs")
-        if urls:
-            logger.info(f"Exemplo de URL (primeira opção): {urls[0]}")
-
-        target_quality = 720
-        best_url = None
-        best_quality = 0
-        highest_below_target = 0
-        best_below_target_url = None
-
-        for entry in urls:
-            if entry.get("extension") != "mp4" and entry.get("name") != "MP4":
-                continue
-                
-            quality_str = entry.get("quality", "") or entry.get("subName", "")
-            if not quality_str:
-                continue
-                
-            try:
-                quality = int(re.sub(r'\D', '', quality_str))
-            except Exception:
-                continue
-                
-            logger.info(f"Opção de qualidade encontrada: {quality}p")
-            url_entry = entry.get("url", "")
-            if not url_entry:
-                continue
-                
-            if quality == target_quality:
-                best_url = url_entry
-                best_quality = quality
-                logger.info(f"Qualidade alvo exata encontrada: {quality}p")
-                break
-            elif quality < target_quality and quality > highest_below_target:
-                highest_below_target = quality
-                best_below_target_url = url_entry
-                logger.info(f"Nova melhor qualidade abaixo do alvo: {quality}p")
-            elif quality > best_quality:
-                best_quality = quality
-                best_url = url_entry
-                logger.info(f"Nova melhor qualidade geral: {quality}p")
-
-        if best_quality == target_quality and best_url:
-            download_url = best_url
-            logger.info(f"Utilizando qualidade exata: {target_quality}p")
-        elif highest_below_target > 0 and best_below_target_url:
-            download_url = best_below_target_url
-            logger.info(f"Utilizando melhor qualidade abaixo do alvo: {highest_below_target}p")
-        elif best_url:
-            download_url = best_url
-            logger.info(f"Utilizando a melhor qualidade disponível: {best_quality}p")
-        else:
-            raise Exception("Nenhum link de download válido encontrado")
-
-        title = main_data.get("title", "") or main_data.get("meta", {}).get("title", "") or f"video_{video_id}"
-        thumbnail_url = main_data.get("pictureUrl", "") or f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg"
-
-        return {
-            'title': title,
-            'thumbnail_url': thumbnail_url,
-            'download_url': download_url,
-            'video_id': video_id
-        }
-
-    except Exception as e:
-        logger.error(f"Erro ao obter informações do vídeo via RapidAPI: {str(e)}")
-        raise
 
 @app.route("/download", methods=["POST"])
 def handle_download():
     try:
         if not request.is_json:
-            logger.error("Requisição não contém JSON válido")
             return jsonify({"error": "Requisição deve conter JSON válido"}), 400
-            
         data = request.get_json()
-        logger.info(f"Dados recebidos: {data}")
-        
         url = data.get("url")
         if not url:
             return jsonify({"error": "URL é obrigatória"}), 400
-            
         video_id = extract_youtube_id(url)
         if not video_id:
             return jsonify({"error": "URL do YouTube inválida"}), 400
-        
+
+        # Se o vídeo já existir, retorna os dados
         video_path = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.mp4")
         if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
-            logger.info(f"Vídeo {video_id} já existe no sistema")
             try:
                 yt_info_url = f"https://www.youtube.com/oembed?url={url}&format=json"
-                info_response = requests.get(yt_info_url)
-                title = info_response.json().get("title", f"Video {video_id}") if info_response.status_code == 200 else f"Video {video_id}"
+                info_resp = requests.get(yt_info_url, timeout=10)
+                title = info_resp.json().get("title", f"video_{video_id}") if info_resp.status_code == 200 else f"video_{video_id}"
             except:
-                title = f"Video {video_id}"
-                
+                title = f"video_{video_id}"
             return jsonify({
                 "success": True,
                 "message": "Vídeo já existe no sistema",
@@ -302,79 +215,60 @@ def handle_download():
                 "title": title
             })
 
-        # MÉTODO 1: Usar RapidAPI
+        # Tenta obter as informações via RapidAPI Option1; se falhar, tenta Option2
+        info = None
         try:
-            logger.info("Tentando download com RapidAPI (Método primário)")
-            video_info = get_video_info_rapidapi(url)
-            if video_info and video_info.get("download_url"):
-                download_url = video_info.get("download_url")
-                title = video_info.get("title", f"Video {video_id}")
-                thumbnail_url = video_info.get("thumbnail_url")
-                
-                if thumbnail_url:
-                    thumb_path = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
-                    thumb_response = requests.get(thumbnail_url)
-                    if thumb_response.status_code == 200:
-                        with open(thumb_path, 'wb') as f:
-                            f.write(thumb_response.content)
-                        logger.info("Thumbnail baixada com sucesso via RapidAPI")
-                
-                success, result = download_from_url(download_url, video_id, title)
-                if success:
-                    logger.info("Download feito com URL direta via RapidAPI")
-                    return jsonify({
-                        "success": True,
-                        "video_id": video_id,
-                        "filename": f"{video_id}.mp4",
-                        "download_url": f"/videos/{video_id}.mp4",
-                        "thumbnail_url": f"/thumbnails/{video_id}.jpg" if os.path.exists(os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")) else None,
-                        "title": title
-                    })
-                else:
-                    logger.warning(f"Download direto via RapidAPI falhou: {result}")
-                    raise Exception(f"Falha no download direto: {result}")
+            logger.info("Tentando RapidAPI Option1...")
+            info = get_video_info_option1(url)
         except Exception as e:
-            logger.warning(f"Método RapidAPI falhou: {str(e)}")
-        
-        # MÉTODO 2: Usar pytube
-        try:
-            logger.info("Tentando download com pytube (Método secundário)")
-            success, result = download_using_pytube(url, video_id)
-            if success:
-                logger.info("Download com pytube bem-sucedido")
-                return jsonify({
-                    "success": True,
-                    "video_id": video_id,
-                    "filename": f"{video_id}.mp4",
-                    "download_url": f"/videos/{video_id}.mp4",
-                    "thumbnail_url": f"/thumbnails/{video_id}.jpg" if os.path.exists(os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")) else None,
-                    "title": result.get("title", f"Video {video_id}")
-                })
-            else:
-                logger.warning(f"Download com pytube falhou: {result}")
-                raise Exception(f"Falha no download com pytube: {result}")
-        except Exception as e:
-            logger.warning(f"Método pytube falhou: {str(e)}")
-
-        return jsonify({
-            "error": "Todos os métodos de download falharam",
-            "details": "Não foi possível baixar o vídeo com nenhum dos métodos disponíveis"
-        }), 500
+            logger.warning(f"RapidAPI Option1 falhou: {str(e)}")
+        if not info:
+            try:
+                logger.info("Tentando RapidAPI Option2...")
+                info = get_video_info_option2(url)
+            except Exception as e:
+                logger.warning(f"RapidAPI Option2 falhou: {str(e)}")
+        if not info:
+            return jsonify({"error": "Todos os métodos de download falharam",
+                            "details": "Não foi possível obter informações válidas do vídeo via RapidAPI"}), 500
+        download_url = info.get("download_url")
+        title = info.get("title", f"video_{video_id}")
+        thumb_url = info.get("thumbnail_url")
+        success, result = download_from_url(download_url, video_id, title)
+        if success:
+            # Tenta baixar a thumbnail informada pela API, se disponível
+            thumb_path = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
+            try:
+                if thumb_url:
+                    r = requests.get(thumb_url, timeout=30)
+                    if r.status_code == 200:
+                        with open(thumb_path, "wb") as f:
+                            f.write(r.content)
+                        logger.info("Thumbnail baixada a partir das informações da API.")
+            except Exception as e:
+                logger.warning(f"Erro ao baixar thumbnail da API: {str(e)}")
+            return jsonify({
+                "success": True,
+                "video_id": video_id,
+                "filename": f"{video_id}.mp4",
+                "download_url": f"/videos/{video_id}.mp4",
+                "thumbnail_url": f"/thumbnails/{video_id}.jpg" if os.path.exists(thumb_path) else None,
+                "title": title
+            })
+        else:
+            return jsonify({"error": "Download falhou", "details": result}), 500
 
     except Exception as e:
         logger.error(f"Erro interno: {str(e)}")
-        return jsonify({
-            "error": "Erro interno",
-            "details": str(e)
-        }), 500
+        return jsonify({"error": "Erro interno", "details": str(e)}), 500
 
 @app.route("/videos/<filename>", methods=["GET"])
 def serve_video(filename):
     try:
-        video_path = os.path.join(DOWNLOAD_FOLDER, filename)
-        if not os.path.exists(video_path):
+        path = os.path.join(DOWNLOAD_FOLDER, filename)
+        if not os.path.exists(path):
             return jsonify({"error": "Vídeo não encontrado"}), 404
-        return send_file(video_path, as_attachment=True)
+        return send_file(path, as_attachment=True)
     except Exception as e:
         logger.error(f"Erro ao servir vídeo: {str(e)}")
         return jsonify({"error": "Erro ao servir vídeo"}), 500
@@ -382,10 +276,10 @@ def serve_video(filename):
 @app.route("/thumbnails/<filename>", methods=["GET"])
 def serve_thumbnail(filename):
     try:
-        thumbnail_path = os.path.join(THUMBNAIL_FOLDER, filename)
-        if not os.path.exists(thumbnail_path):
+        path = os.path.join(THUMBNAIL_FOLDER, filename)
+        if not os.path.exists(path):
             return jsonify({"error": "Thumbnail não encontrada"}), 404
-        return send_file(thumbnail_path)
+        return send_file(path)
     except Exception as e:
         logger.error(f"Erro ao servir thumbnail: {str(e)}")
         return jsonify({"error": "Erro ao servir thumbnail"}), 500
