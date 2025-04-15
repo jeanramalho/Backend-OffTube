@@ -10,6 +10,8 @@ import time
 import json
 from dotenv import load_dotenv
 import random
+from pytube import YouTube
+from pytube.exceptions import RegexMatchError, VideoUnavailable
 
 # Carregar variáveis de ambiente
 load_dotenv()
@@ -39,6 +41,80 @@ def extract_youtube_id(url):
     if not match:
         return None
     return match.group(1)
+
+def download_using_pytube(url, video_id):
+    """
+    Baixa o vídeo diretamente usando o pytube
+    """
+    logger.info(f"Iniciando download com pytube para {url}")
+    
+    # Caminhos para salvar os arquivos
+    video_path = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.mp4")
+    thumbnail_path = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
+    
+    try:
+        # Criar objeto YouTube
+        yt = YouTube(url)
+        
+        # Salvar thumbnail
+        if yt.thumbnail_url:
+            logger.info(f"Salvando thumbnail: {yt.thumbnail_url}")
+            thumbnail_response = requests.get(yt.thumbnail_url)
+            if thumbnail_response.status_code == 200:
+                with open(thumbnail_path, 'wb') as f:
+                    f.write(thumbnail_response.content)
+        
+        # Tentar obter stream de 720p primeiro
+        logger.info("Procurando stream de 720p")
+        stream = yt.streams.filter(progressive=True, file_extension='mp4', res="720p").first()
+        
+        # Se não encontrar 720p, procurar a melhor qualidade abaixo
+        if not stream:
+            logger.info("Stream de 720p não encontrado, procurando alternativas")
+            all_streams = yt.streams.filter(progressive=True, file_extension='mp4')
+            
+            # Ordenar streams por qualidade
+            quality_streams = []
+            for s in all_streams:
+                try:
+                    if s.resolution:
+                        quality = int(s.resolution[:-1])  # Remove o 'p' da resolução
+                        quality_streams.append((quality, s))
+                except (ValueError, TypeError, AttributeError):
+                    continue
+            
+            # Ordenar por qualidade (decrescente)
+            quality_streams.sort(reverse=True)
+            
+            # Encontrar a melhor qualidade menor ou igual a 720p
+            for quality, s in quality_streams:
+                if quality <= 720:
+                    stream = s
+                    logger.info(f"Selecionada qualidade: {quality}p")
+                    break
+            
+            # Se ainda não encontrou, pegar o primeiro stream disponível
+            if not stream and all_streams:
+                stream = all_streams.first()
+                logger.info(f"Usando primeira stream disponível: {stream.resolution}")
+        
+        if not stream:
+            raise Exception("Nenhum stream disponível para download")
+        
+        # Baixar o vídeo
+        logger.info(f"Baixando vídeo em {stream.resolution}")
+        stream.download(output_path=DOWNLOAD_FOLDER, filename=f"{video_id}.mp4")
+        
+        # Verificar se o arquivo foi baixado e tem tamanho > 0
+        if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
+            logger.info(f"Download concluído com sucesso. Tamanho: {os.path.getsize(video_path)/1024/1024:.2f} MB")
+            return True, {"title": yt.title or f"Video {video_id}"}
+        else:
+            raise Exception("Arquivo baixado está vazio ou não existe")
+            
+    except Exception as e:
+        logger.error(f"Erro no download com pytube: {str(e)}")
+        return False, str(e)
 
 def get_video_info_rapidapi(url):
     """Obtém informações do vídeo usando a API do RapidAPI"""
@@ -177,254 +253,6 @@ def get_video_info_rapidapi(url):
         logger.error(f"Erro ao obter informações do vídeo: {str(e)}")
         raise
 
-def get_video_info_alternative(url):
-    """
-    Método alternativo para obter informações do vídeo usando serviços alternativos
-    """
-    try:
-        video_id = extract_youtube_id(url)
-        if not video_id:
-            raise Exception("URL do YouTube inválida")
-        
-        logger.info(f"Tentando método alternativo para: {video_id}")
-        
-        # Lista de user agents para rotação
-        user_agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Safari/605.1.15',
-            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:90.0) Gecko/20100101 Firefox/90.0'
-        ]
-        
-        # Adicionar delay para evitar rate limits
-        time.sleep(random.uniform(1, 2))
-        
-        headers = {
-            'User-Agent': random.choice(user_agents),
-            'Accept': 'application/json, text/plain, */*',
-            'Referer': 'https://www.google.com/'
-        }
-        
-        # MÉTODO 1: Tentar com pytube diretamente
-        try:
-            from pytube import YouTube
-            
-            logger.info("Tentando método pytube direto")
-            yt = YouTube(url)
-            
-            # Procurar stream com qualidade 720p ou melhor qualidade abaixo
-            target_quality = 720
-            stream = None
-            
-            # Primeiro, tentar encontrar exatamente 720p
-            streams_720p = yt.streams.filter(progressive=True, file_extension='mp4', resolution='720p')
-            if streams_720p:
-                stream = streams_720p.first()
-                logger.info("Encontrado stream de 720p")
-            
-            # Se não encontrar 720p, encontrar a melhor qualidade abaixo
-            if not stream:
-                all_streams = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution')
-                
-                best_below_target = None
-                for s in all_streams:
-                    try:
-                        res = int(s.resolution[:-1])  # Remover o 'p' do final
-                        if res < target_quality and (best_below_target is None or res > int(best_below_target.resolution[:-1])):
-                            best_below_target = s
-                    except:
-                        continue
-                
-                if best_below_target:
-                    stream = best_below_target
-                    logger.info(f"Encontrado stream abaixo de 720p: {stream.resolution}")
-                else:
-                    # Se não encontrar nada abaixo, pegar o melhor disponível
-                    stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
-                    logger.info(f"Usando melhor stream disponível: {stream.resolution if stream else 'Nenhum'}")
-            
-            if stream:
-                logger.info(f"Stream encontrado: {stream.resolution}")
-                return {
-                    'title': yt.title,
-                    'thumbnail_url': yt.thumbnail_url,
-                    'download_url': stream.url,
-                    'video_id': video_id
-                }
-            else:
-                logger.warning("Nenhum stream adequado encontrado via pytube")
-        except Exception as e:
-            logger.warning(f"Método pytube falhou: {str(e)}")
-        
-        # MÉTODO 2: Tentar serviço Y2mate
-        try:
-            logger.info("Tentando método y2mate")
-            
-            # Usar outro user agent
-            headers['User-Agent'] = random.choice(user_agents)
-            
-            # Etapa 1: Iniciar o processo de análise
-            analyze_url = "https://www.y2mate.com/mates/analyzeV2/ajax"
-            payload = {
-                "url": url,
-                "q_auto": 0,
-                "ajax": 1
-            }
-            
-            # Adicionar delay para evitar rate limits
-            time.sleep(random.uniform(1, 2))
-            
-            analyze_response = requests.post(analyze_url, data=payload, headers=headers)
-            
-            if analyze_response.status_code != 200:
-                raise Exception(f"Erro ao analisar vídeo: {analyze_response.status_code}")
-            
-            try:
-                analyze_data = analyze_response.json()
-            except:
-                logger.error(f"Erro ao decodificar resposta y2mate: {analyze_response.text[:100]}...")
-                raise Exception("Resposta inválida do serviço y2mate")
-            
-            if not analyze_data.get("status") == "success":
-                raise Exception("Análise do vídeo falhou")
-            
-            # Extrair informações necessárias
-            title = analyze_data.get("title", f"Video {video_id}")
-            vid = analyze_data.get("vid", "")
-            
-            if not vid:
-                raise Exception("ID do vídeo não encontrado na resposta")
-            
-            # Etapa 2: Converter para obter o link de download
-            convert_url = "https://www.y2mate.com/mates/convertV2/index"
-            
-            # Primeiro tentar 720p, depois qualidades inferiores
-            qualities = ["720p", "480p", "360p", "240p", "144p"]
-            download_url = None
-            
-            for quality in qualities:
-                convert_payload = {
-                    "vid": vid,
-                    "k": f"mp4_{quality}",
-                }
-                
-                # Adicionar delay para evitar rate limits
-                time.sleep(random.uniform(0.5, 1))
-                
-                logger.info(f"Tentando obter vídeo na qualidade {quality}")
-                convert_response = requests.post(convert_url, data=convert_payload, headers=headers)
-                
-                if convert_response.status_code == 200:
-                    try:
-                        convert_data = convert_response.json()
-                        if convert_data.get("status") == "success" and convert_data.get("dlink"):
-                            download_url = convert_data.get("dlink")
-                            logger.info(f"Link de download encontrado: {quality}")
-                            break
-                    except:
-                        continue
-            
-            if download_url:
-                return {
-                    'title': title,
-                    'thumbnail_url': f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg",
-                    'download_url': download_url,
-                    'video_id': video_id
-                }
-        except Exception as e2:
-            logger.warning(f"Método y2mate falhou: {str(e2)}")
-        
-        # Se chegou aqui, nenhum método funcionou
-        raise Exception("Todos os métodos alternativos falharam")
-        
-    except Exception as e:
-        logger.error(f"Erro no método alternativo: {str(e)}")
-        raise
-
-def download_video(video_info):
-    try:
-        video_id = video_info['video_id']
-        logger.info(f"Iniciando download do vídeo: {video_id}")
-        
-        # Baixar thumbnail
-        if video_info["thumbnail_url"]:
-            logger.info(f"Baixando thumbnail: {video_info['thumbnail_url']}")
-            response = requests.get(video_info["thumbnail_url"])
-            if response.status_code == 200:
-                with open(os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg"), 'wb') as f:
-                    f.write(response.content)
-                logger.info("Thumbnail baixada com sucesso")
-        
-        # Baixar o vídeo com um user agent aleatório
-        user_agents = [
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36',
-            'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/14.0 Safari/605.1.15',
-            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/92.0.4515.107 Safari/537.36',
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:90.0) Gecko/20100101 Firefox/90.0'
-        ]
-        
-        headers = {
-            'User-Agent': random.choice(user_agents),
-            'Accept': '*/*',
-            'Accept-Encoding': 'gzip, deflate, br',
-            'Connection': 'keep-alive',
-            'Referer': 'https://www.youtube.com/'
-        }
-        
-        # Verificar se a URL de download é válida
-        if not video_info["download_url"] or not video_info["download_url"].startswith(("http://", "https://")):
-            logger.error(f"URL de download inválida: {video_info['download_url']}")
-            raise Exception("URL de download inválida")
-        
-        logger.info(f"Baixando vídeo de: {video_info['download_url'][:50]}...")
-        
-        # Tentar o download com tratamento de retry
-        max_retries = 3
-        retry_count = 0
-        success = False
-        
-        while retry_count < max_retries and not success:
-            try:
-                response = requests.get(video_info["download_url"], headers=headers, stream=True, timeout=30)
-                
-                if response.status_code == 200:
-                    video_path = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.mp4")
-                    total_size = 0
-                    with open(video_path, 'wb') as f:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            if chunk:
-                                f.write(chunk)
-                                total_size += len(chunk)
-                    
-                    # Verificar se o arquivo foi baixado completamente
-                    if total_size > 0:
-                        logger.info(f"Download completo. Tamanho do arquivo: {total_size/1024/1024:.2f}MB")
-                        success = True
-                    else:
-                        logger.warning("Arquivo baixado está vazio")
-                        retry_count += 1
-                        time.sleep(2)
-                else:
-                    logger.error(f"Erro ao baixar vídeo. Status code: {response.status_code}")
-                    retry_count += 1
-                    time.sleep(2)
-                    
-            except requests.exceptions.RequestException as e:
-                logger.error(f"Erro de conexão ao baixar vídeo: {str(e)}")
-                retry_count += 1
-                time.sleep(2)
-        
-        if success:
-            return True, {
-                "title": video_info["title"]
-            }
-        else:
-            raise Exception(f"Falha após {max_retries} tentativas de download")
-            
-    except Exception as e:
-        logger.error(f"Erro ao baixar vídeo: {str(e)}")
-        return False, str(e)
-
 @app.route("/download", methods=["POST"])
 def handle_download():
     try:
@@ -473,116 +301,115 @@ def handle_download():
                 "title": title
             })
         
-        # Tentar obter informações do vídeo usando primeiro método
-        video_info = None
-        error_message = None
+        # MUDANÇA PRINCIPAL: Usar o pytube diretamente como primeira opção
+        try:
+            logger.info("Tentando download direto com pytube")
+            success, result = download_using_pytube(url, video_id)
+            if success:
+                logger.info("Download com pytube bem-sucedido")
+                return jsonify({
+                    "success": True,
+                    "video_id": video_id,
+                    "filename": f"{video_id}.mp4",
+                    "download_url": f"/videos/{video_id}.mp4",
+                    "thumbnail_url": f"/thumbnails/{video_id}.jpg" if os.path.exists(os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")) else None,
+                    "title": result["title"]
+                })
+        except Exception as e:
+            logger.warning(f"Download com pytube falhou: {str(e)}")
         
-        # Lista para armazenar erros de cada método
-        errors = []
-        
-        # Método 1: RapidAPI
+        # Se o pytube falhar, tentar o método RapidAPI
         try:
             logger.info("Tentando obter informações com API RapidAPI")
             video_info = get_video_info_rapidapi(url)
-            if video_info:
-                logger.info("API RapidAPI bem-sucedida")
+            
+            if video_info and video_info.get("download_url"):
+                # Não vamos mais tentar baixar usando a URL diretamente, pois isso está causando 403
+                # Em vez disso, usamos pytube novamente mas para o download direto
+                success, result = download_using_pytube(url, video_id)
+                
+                if success:
+                    logger.info("Download feito com pytube após obter dados do RapidAPI")
+                    return jsonify({
+                        "success": True,
+                        "video_id": video_id,
+                        "filename": f"{video_id}.mp4",
+                        "download_url": f"/videos/{video_id}.mp4",
+                        "thumbnail_url": f"/thumbnails/{video_id}.jpg" if os.path.exists(os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")) else None,
+                        "title": result["title"]
+                    })
+            
         except Exception as e:
-            error_message = str(e)
-            errors.append(f"RapidAPI: {error_message}")
-            logger.warning(f"API RapidAPI falhou: {error_message}")
+            logger.warning(f"Método RapidAPI falhou: {str(e)}")
         
-        # Método 2: Alternativo
-        if not video_info:
-            try:
-                logger.info("Tentando método alternativo")
-                video_info = get_video_info_alternative(url)
-                if video_info:
-                    logger.info("Método alternativo bem-sucedido")
-            except Exception as e2:
-                errors.append(f"Alternativo: {str(e2)}")
-                logger.error(f"Método alternativo também falhou: {str(e2)}")
-        
-        # Método 3: Pytube direto como último recurso
-        if not video_info:
-            try:
-                logger.info("Tentando método pytube direto")
-                from pytube import YouTube
-                
-                # Adicionar delay para evitar rate limits
-                time.sleep(random.uniform(1, 2))
-                
-                yt = YouTube(url)
-                
-                # Primeiro procurar 720p
-                stream = yt.streams.filter(progressive=True, file_extension='mp4', resolution='720p').first()
-                
-                # Se não encontrar 720p, buscar a melhor qualidade abaixo
-                if not stream:
-                    logger.info("720p não disponível, buscando qualidade inferior")
-                    streams = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution')
-                    
-                    # Encontrar a melhor qualidade abaixo de 720p
-                    target = 720
-                    best_below = None
-                    
-                    for s in streams:
-                        try:
-                            res = int(s.resolution[:-1])  # Remover 'p' do final
-                            if res < target and (best_below is None or res > int(best_below.resolution[:-1])):
-                                best_below = s
-                        except:
-                            continue
-                    
-                    if best_below:
-                        stream = best_below
-                        logger.info(f"Usando qualidade {stream.resolution}")
-                    else:
-                        # Se não encontrar nenhuma abaixo, pegar a melhor disponível
-                        stream = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution').desc().first()
-                        logger.info(f"Usando melhor qualidade disponível: {stream.resolution if stream else 'Nenhuma'}")
-                
-                if not stream:
-                    raise Exception("Nenhum stream disponível")
-                    
-                video_info = {
-                    'title': yt.title,
-                    'thumbnail_url': yt.thumbnail_url,
-                    'download_url': stream.url,
-                    'video_id': video_id
-                }
-                logger.info("Método pytube direto bem-sucedido")
-            except Exception as e3:
-                errors.append(f"Pytube: {str(e3)}")
-                logger.error(f"Todos os métodos falharam. Erros: {', '.join(errors)}")
+        # Se ainda não conseguiu, fazer uma última tentativa com pytube
+        try:
+            logger.info("Fazendo tentativa final com pytube")
+            # Tentando novamente com mais configurações
+            yt = YouTube(url)
+            
+            # Tentar stream progressivo (áudio e vídeo juntos)
+            streams = yt.streams.filter(progressive=True, file_extension='mp4').order_by('resolution')
+            if not streams:
+                streams = yt.streams.filter(file_extension='mp4').order_by('resolution')
+            
+            if not streams:
                 return jsonify({
-                    "error": "Falha ao processar URL do vídeo",
-                    "details": f"Tentamos múltiplos métodos, mas todos falharam. Erro: {str(e3)}"
+                    "error": "Nenhuma stream de vídeo encontrada",
+                    "details": "O vídeo pode estar indisponível ou protegido"
                 }), 500
-        
-        if not video_info:
+            
+            # Salvar thumbnail
+            if yt.thumbnail_url:
+                thumbnail_path = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
+                thumbnail_response = requests.get(yt.thumbnail_url)
+                if thumbnail_response.status_code == 200:
+                    with open(thumbnail_path, 'wb') as f:
+                        f.write(thumbnail_response.content)
+            
+            # Encontrar o stream adequado
+            stream = None
+            for s in streams:
+                if s.resolution and s.resolution.endswith('p'):
+                    try:
+                        quality = int(s.resolution[:-1])
+                        if quality <= 720:
+                            stream = s
+                            logger.info(f"Selecionada qualidade {quality}p")
+                            break
+                    except (ValueError, TypeError):
+                        continue
+            
+            # Se não encontrou nada adequado, usar o de maior qualidade
+            if not stream:
+                stream = streams.last()
+                
+            # Download direto
+            out_file = stream.download(output_path=DOWNLOAD_FOLDER, filename=f"{video_id}.mp4")
+            
+            if os.path.exists(out_file) and os.path.getsize(out_file) > 0:
+                logger.info(f"Download final bem-sucedido: {out_file}")
+                return jsonify({
+                    "success": True,
+                    "video_id": video_id,
+                    "filename": f"{video_id}.mp4",
+                    "download_url": f"/videos/{video_id}.mp4",
+                    "thumbnail_url": f"/thumbnails/{video_id}.jpg" if os.path.exists(os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")) else None,
+                    "title": yt.title or f"Video {video_id}"
+                })
+            else:
+                return jsonify({
+                    "error": "Falha no download final",
+                    "details": "Arquivo não foi baixado corretamente"
+                }), 500
+                
+        except Exception as e:
+            logger.error(f"Todas as tentativas falharam: {str(e)}")
             return jsonify({
-                "error": "Não foi possível obter informações do vídeo",
-                "details": f"Todos os métodos falharam. Erros: {', '.join(errors)}"
-            }), 500
-        
-        # Baixar vídeo
-        success, result = download_video(video_info)
-        
-        if not success:
-            return jsonify({
-                "error": "Erro ao baixar vídeo",
-                "details": str(result)
+                "error": "Todos os métodos de download falharam",
+                "details": str(e)
             }), 500
 
-        return jsonify({
-            "success": True,
-            "video_id": video_id,
-            "filename": f"{video_id}.mp4",
-            "download_url": f"/videos/{video_id}.mp4",
-            "thumbnail_url": f"/thumbnails/{video_id}.jpg" if os.path.exists(os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")) else None,
-            "title": result["title"]
-        })
-        
     except Exception as e:
         logger.error(f"Erro interno: {str(e)}")
         return jsonify({
