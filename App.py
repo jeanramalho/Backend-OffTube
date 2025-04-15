@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app)
 
-# Pastas de armazenamento
+# Pastas para armazenar vídeos e thumbnails
 DOWNLOAD_FOLDER = "videos"
 THUMBNAIL_FOLDER = "thumbnails"
 Path(DOWNLOAD_FOLDER).mkdir(exist_ok=True)
@@ -33,8 +33,8 @@ def get_video_info_option1(url):
     """
     Obtém informações do vídeo via RapidAPI Option1.
     Endpoint: youtube-quick-video-downloader-free-api-downlaod-all-video.p.rapidapi.com
-    Retorna um dicionário com title, thumbnail_url, download_url e video_id.
-    Prioriza qualidade 720p ou, se não disponível, a melhor abaixo de 720.
+    Retorna um dicionário com title, thumbnail_url, download_url, video_id e quality.
+    Prioriza qualidade 720p ou a melhor abaixo de 720.
     """
     api_url = "https://youtube-quick-video-downloader-free-api-downlaod-all-video.p.rapidapi.com/videodownload.php"
     headers = {
@@ -53,8 +53,8 @@ def get_video_info_option1(url):
     urls = item["urls"]
     target = 720
     chosen_url = None
-    below_url = None
-    below_quality = 0
+    chosen_quality = 0
+    # Itera pelas opções encontradas
     for entry in urls:
         if entry.get("extension") != "mp4" and entry.get("name") != "MP4":
             continue
@@ -63,17 +63,16 @@ def get_video_info_option1(url):
             continue
         try:
             quality = int(re.sub(r"\D", "", quality_str))
-        except:
+        except Exception:
             continue
         logger.info(f"Option1: Encontrou stream com qualidade {quality}p")
         if quality == target:
             chosen_url = entry["url"]
+            chosen_quality = target
             break
-        elif quality < target and quality > below_quality:
-            below_quality = quality
-            below_url = entry["url"]
-    if not chosen_url:
-        chosen_url = below_url
+        elif quality < target and quality > chosen_quality:
+            chosen_quality = quality
+            chosen_url = entry["url"]
     if not chosen_url:
         raise Exception("Option1: Nenhuma URL de download válida encontrada.")
     title = item.get("title") or f"video_{extract_youtube_id(url)}"
@@ -82,15 +81,15 @@ def get_video_info_option1(url):
         "title": title,
         "thumbnail_url": thumb,
         "download_url": chosen_url,
-        "video_id": extract_youtube_id(url)
+        "video_id": extract_youtube_id(url),
+        "quality": chosen_quality
     }
 
 def get_video_info_option2(url):
     """
     Obtém informações do vídeo via RapidAPI Option2.
     Endpoint: youtube-media-downloader.p.rapidapi.com
-    Requer o parâmetro videoId extraído da URL.
-    Retorna um dicionário com title, thumbnail_url, download_url e video_id.
+    Retorna um dicionário com title, thumbnail_url, download_url, video_id e quality.
     """
     video_id = extract_youtube_id(url)
     if not video_id:
@@ -111,25 +110,23 @@ def get_video_info_option2(url):
         raise Exception("Option2: Nenhuma stream encontrada.")
     target = 720
     chosen_url = None
-    below_url = None
-    below_quality = 0
+    chosen_quality = 0
     for vid in videos:
         quality_str = vid.get("quality")
         if not quality_str:
             continue
         try:
             quality = int(re.sub(r"\D", "", quality_str))
-        except:
+        except Exception:
             continue
         logger.info(f"Option2: Encontrou stream com qualidade {quality}p")
         if quality == target:
             chosen_url = vid["url"]
+            chosen_quality = target
             break
-        elif quality < target and quality > below_quality:
-            below_quality = quality
-            below_url = vid["url"]
-    if not chosen_url:
-        chosen_url = below_url
+        elif quality < target and quality > chosen_quality:
+            chosen_quality = quality
+            chosen_url = vid["url"]
     if not chosen_url:
         raise Exception("Option2: Nenhuma URL de download válida encontrada.")
     title = data.get("title") or f"video_{video_id}"
@@ -139,14 +136,14 @@ def get_video_info_option2(url):
         "title": title,
         "thumbnail_url": thumb_url,
         "download_url": chosen_url,
-        "video_id": video_id
+        "video_id": video_id,
+        "quality": chosen_quality
     }
 
 def download_from_url(download_url, video_id, title):
     """
-    Faz o download do arquivo utilizando a URL obtida.
-    Salva o vídeo em <DOWNLOAD_FOLDER>/<video_id>.mp4.
-    Tenta baixar a thumbnail padrão também.
+    Faz o download do arquivo utilizando a URL obtida via RapidAPI.
+    Salva o vídeo em <DOWNLOAD_FOLDER>/<video_id>.mp4 e baixa a thumbnail do YouTube.
     """
     logger.info(f"Download iniciando (mostrando primeiros 100 caracteres): {download_url[:100]}...")
     video_path = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.mp4")
@@ -164,8 +161,8 @@ def download_from_url(download_url, video_id, title):
                 if chunk:
                     f.write(chunk)
         if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
-            logger.info(f"Download concluído com sucesso (tamanho: {os.path.getsize(video_path)/1024/1024:.2f} MB)")
-            # Tenta baixar a thumbnail padrão do YouTube
+            logger.info(f"Download concluído (tamanho: {os.path.getsize(video_path)/1024/1024:.2f} MB)")
+            # Tenta baixar thumbnail padrão
             try:
                 thumb_resp = requests.get(f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg", timeout=30)
                 if thumb_resp.status_code != 200:
@@ -215,28 +212,52 @@ def handle_download():
                 "title": title
             })
 
-        # Tenta obter as informações via RapidAPI Option1; se falhar, tenta Option2
+        # Primeiro, tenta Option1
         info = None
         try:
             logger.info("Tentando RapidAPI Option1...")
             info = get_video_info_option1(url)
+            logger.info(f"Option1 retornou qualidade {info.get('quality', 0)}p")
         except Exception as e:
             logger.warning(f"RapidAPI Option1 falhou: {str(e)}")
-        if not info:
+        # Se Option1 retornou uma qualidade abaixo de 720, tenta Option2 para ver se há melhor
+        if info and info.get("quality", 0) < 720:
             try:
-                logger.info("Tentando RapidAPI Option2...")
-                info = get_video_info_option2(url)
+                logger.info("Option1 retornou qualidade abaixo de 720p; tentando Option2...")
+                info2 = get_video_info_option2(url)
+                q2 = info2.get("quality", 0)
+                logger.info(f"Option2 retornou qualidade {q2}p")
+                if q2 >= 720:
+                    info = info2
+                    logger.info("Utilizando dados da Option2, pois possui qualidade 720p ou superior.")
+                else:
+                    logger.info("Option2 também retornou qualidade inferior a 720p; mantendo Option1.")
             except Exception as e:
-                logger.warning(f"RapidAPI Option2 falhou: {str(e)}")
+                logger.warning(f"Option2 falhou: {str(e)}")
+        # Se não obteve dados de Option1 ou Option2, retorna erro
         if not info:
             return jsonify({"error": "Todos os métodos de download falharam",
-                            "details": "Não foi possível obter informações válidas do vídeo via RapidAPI"}), 500
+                            "details": "Não foi possível obter informações do vídeo via RapidAPI"}), 500
+
         download_url = info.get("download_url")
         title = info.get("title", f"video_{video_id}")
         thumb_url = info.get("thumbnail_url")
         success, result = download_from_url(download_url, video_id, title)
+        # Se o download direto der erro (por exemplo 403), tenta Option2 se ainda não foi tentado
+        if not success:
+            logger.warning(f"Download via Option1 falhou: {result}. Tentando Option2 como fallback...")
+            try:
+                info2 = get_video_info_option2(url)
+                download_url = info2.get("download_url")
+                title = info2.get("title", f"video_{video_id}")
+                thumb_url = info2.get("thumbnail_url")
+                success, result = download_from_url(download_url, video_id, title)
+            except Exception as e:
+                logger.error(f"Fallback Option2 falhou: {str(e)}")
+                return jsonify({"error": "Download falhou", "details": str(e)}), 500
+
         if success:
-            # Tenta baixar a thumbnail informada pela API, se disponível
+            # Tenta baixar a thumbnail informada pela API (caso diferente do padrão)
             thumb_path = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
             try:
                 if thumb_url:
