@@ -42,6 +42,47 @@ def extract_youtube_id(url):
         return None
     return match.group(1)
 
+def download_from_url(download_url, video_id, title):
+    """Download video directly from a URL."""
+    logger.info(f"Iniciando download direto da URL: {download_url[:100]}...")
+    
+    video_path = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.mp4")
+    thumbnail_path = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
+    
+    try:
+        # Download the video using requests
+        response = requests.get(download_url, stream=True)
+        response.raise_for_status()  # Raise exception for HTTP errors
+        
+        # Save the video to a file
+        with open(video_path, 'wb') as f:
+            for chunk in response.iter_content(chunk_size=8192):
+                if chunk:
+                    f.write(chunk)
+        
+        # Verify the file exists and has content
+        if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
+            logger.info(f"Download direto concluído com sucesso. Tamanho: {os.path.getsize(video_path)/1024/1024:.2f} MB")
+            
+            # Try to get the thumbnail as well
+            try:
+                thumbnail_url = f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg"
+                thumbnail_response = requests.get(thumbnail_url)
+                if thumbnail_response.status_code == 200:
+                    with open(thumbnail_path, 'wb') as f:
+                        f.write(thumbnail_response.content)
+                    logger.info(f"Thumbnail baixada com sucesso")
+            except Exception as e:
+                logger.warning(f"Erro ao baixar thumbnail: {str(e)}")
+            
+            return True, title
+        else:
+            raise Exception("Arquivo baixado está vazio ou não existe")
+            
+    except Exception as e:
+        logger.error(f"Erro no download direto: {str(e)}")
+        return False, str(e)
+
 def download_using_pytube(url, video_id):
     """
     Baixa o vídeo diretamente usando o pytube
@@ -301,9 +342,48 @@ def handle_download():
                 "title": title
             })
         
-        # MUDANÇA PRINCIPAL: Usar o pytube diretamente como primeira opção
+        # Método 1: Usar RapidAPI como primeira opção
         try:
-            logger.info("Tentando download direto com pytube")
+            logger.info("Tentando obter informações com API RapidAPI (Método principal)")
+            video_info = get_video_info_rapidapi(url)
+            
+            if video_info and video_info.get("download_url"):
+                download_url = video_info.get("download_url")
+                title = video_info.get("title", f"Video {video_id}")
+                thumbnail_url = video_info.get("thumbnail_url")
+                
+                # Baixar o thumbnail se disponível
+                if thumbnail_url:
+                    try:
+                        thumbnail_path = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
+                        thumbnail_response = requests.get(thumbnail_url)
+                        if thumbnail_response.status_code == 200:
+                            with open(thumbnail_path, 'wb') as f:
+                                f.write(thumbnail_response.content)
+                            logger.info("Thumbnail baixada com sucesso")
+                    except Exception as e:
+                        logger.warning(f"Erro ao baixar thumbnail: {str(e)}")
+                
+                # Download direto usando a URL obtida
+                success, result = download_from_url(download_url, video_id, title)
+                if success:
+                    logger.info("Download feito com URL direta do RapidAPI")
+                    return jsonify({
+                        "success": True,
+                        "video_id": video_id,
+                        "filename": f"{video_id}.mp4",
+                        "download_url": f"/videos/{video_id}.mp4",
+                        "thumbnail_url": f"/thumbnails/{video_id}.jpg" if os.path.exists(os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")) else None,
+                        "title": title
+                    })
+                else:
+                    logger.warning(f"Download direto falhou: {result}")
+        except Exception as e:
+            logger.warning(f"Método RapidAPI falhou: {str(e)}")
+        
+        # Método 2: Se RapidAPI falhar, tentar com pytube
+        try:
+            logger.info("Tentando download com pytube (Método secundário)")
             success, result = download_using_pytube(url, video_id)
             if success:
                 logger.info("Download com pytube bem-sucedido")
@@ -315,34 +395,12 @@ def handle_download():
                     "thumbnail_url": f"/thumbnails/{video_id}.jpg" if os.path.exists(os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")) else None,
                     "title": result["title"]
                 })
+            else:
+                logger.warning(f"Download com pytube falhou: {result}")
         except Exception as e:
-            logger.warning(f"Download com pytube falhou: {str(e)}")
+            logger.warning(f"Método pytube falhou: {str(e)}")
         
-        # Se o pytube falhar, tentar o método RapidAPI
-        try:
-            logger.info("Tentando obter informações com API RapidAPI")
-            video_info = get_video_info_rapidapi(url)
-            
-            if video_info and video_info.get("download_url"):
-                # Não vamos mais tentar baixar usando a URL diretamente, pois isso está causando 403
-                # Em vez disso, usamos pytube novamente mas para o download direto
-                success, result = download_using_pytube(url, video_id)
-                
-                if success:
-                    logger.info("Download feito com pytube após obter dados do RapidAPI")
-                    return jsonify({
-                        "success": True,
-                        "video_id": video_id,
-                        "filename": f"{video_id}.mp4",
-                        "download_url": f"/videos/{video_id}.mp4",
-                        "thumbnail_url": f"/thumbnails/{video_id}.jpg" if os.path.exists(os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")) else None,
-                        "title": result["title"]
-                    })
-            
-        except Exception as e:
-            logger.warning(f"Método RapidAPI falhou: {str(e)}")
-        
-        # Se ainda não conseguiu, fazer uma última tentativa com pytube
+        # Método 3: Fazer uma última tentativa com pytube com configurações diferentes
         try:
             logger.info("Fazendo tentativa final com pytube")
             # Tentando novamente com mais configurações
