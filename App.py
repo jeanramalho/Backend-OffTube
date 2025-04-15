@@ -9,23 +9,23 @@ from dotenv import load_dotenv
 from pytube import YouTube
 from pytube.exceptions import RegexMatchError, VideoUnavailable
 
-# Carregar variáveis de ambiente
+# Carrega variáveis de ambiente
 load_dotenv()
 
-# Configurar logging
+# Configura o logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 CORS(app)
 
-# Pastas para armazenar os vídeos e thumbnails
+# Configurar pastas onde os vídeos e thumbnails serão salvos
 DOWNLOAD_FOLDER = "videos"
 THUMBNAIL_FOLDER = "thumbnails"
 Path(DOWNLOAD_FOLDER).mkdir(exist_ok=True)
 Path(THUMBNAIL_FOLDER).mkdir(exist_ok=True)
 
-# Rota de teste para verificar se a API está online
+# Rota teste para verificar se a API está online
 @app.route("/", methods=["GET"])
 def index():
     return jsonify({"status": "API is running"})
@@ -44,29 +44,32 @@ def download_from_url(download_url, video_id, title):
     O vídeo é salvo em DOWNLOAD_FOLDER com o nome <video_id>.mp4.
     Também tenta baixar a thumbnail do vídeo.
     """
-    logger.info(f"Iniciando download direto da URL (mostrando os primeiros 100 caracteres): {download_url[:100]}...")
+    logger.info(f"Iniciando download direto da URL (primeiros 100 caracteres): {download_url[:100]}...")
     video_path = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.mp4")
     thumbnail_path = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
     
     try:
-        # Se a URL for relativa, completa com a base da RapidAPI
+        # Se a URL for relativa, completa com a base RapidAPI
         if download_url.startswith("/"):
             base_url = "https://youtube-quick-video-downloader-free-api-downlaod-all-video.p.rapidapi.com"
             download_url = base_url + download_url
         
+        # Headers ajustados para simular uma requisição feita por um navegador
         headers = {
             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
             'Accept': '*/*',
             'Accept-Language': 'en-US,en;q=0.9',
-            'Referer': 'https://www.youtube.com/'
+            'Referer': 'https://www.youtube.com/',
+            'Origin': 'https://www.youtube.com',
+            'Sec-Fetch-Dest': 'video',
+            'Sec-Fetch-Mode': 'no-cors'
         }
         
         response = requests.get(download_url, headers=headers, stream=True, allow_redirects=True)
         response.raise_for_status()
-
         logger.info(f"Resposta do download direto: Status {response.status_code}, Content-Type: {response.headers.get('Content-Type')}, Content-Length: {response.headers.get('Content-Length', 'Desconhecido')}")
         
-        # Gravar o conteúdo em arquivo
+        # Grava o conteúdo em arquivo
         with open(video_path, 'wb') as f:
             for chunk in response.iter_content(chunk_size=8192):
                 if chunk:
@@ -77,7 +80,6 @@ def download_from_url(download_url, video_id, title):
             logger.info(f"Download concluído com sucesso. Tamanho: {os.path.getsize(video_path)/1024/1024:.2f} MB")
             # Tenta baixar a thumbnail
             try:
-                # Primeiro tenta a URL padrão do maxresdefault, se não funcionar, tenta hqdefault
                 thumbnail_url = f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg"
                 thumb_response = requests.get(thumbnail_url)
                 if thumb_response.status_code != 200:
@@ -86,7 +88,7 @@ def download_from_url(download_url, video_id, title):
                 if thumb_response.status_code == 200:
                     with open(thumbnail_path, 'wb') as f:
                         f.write(thumb_response.content)
-                    logger.info(f"Thumbnail baixada com sucesso")
+                    logger.info("Thumbnail baixada com sucesso")
             except Exception as e:
                 logger.warning(f"Erro ao baixar thumbnail: {str(e)}")
             return True, title
@@ -108,7 +110,7 @@ def download_using_pytube(url, video_id):
     
     try:
         yt = YouTube(url)
-        # Salvar thumbnail
+        # Baixar thumbnail pelo pytube
         if yt.thumbnail_url:
             logger.info(f"Baixando thumbnail do pytube: {yt.thumbnail_url}")
             thumb_response = requests.get(yt.thumbnail_url)
@@ -116,7 +118,7 @@ def download_using_pytube(url, video_id):
                 with open(thumbnail_path, 'wb') as f:
                     f.write(thumb_response.content)
         
-        # Tentar stream em 720p
+        # Tenta stream em 720p
         logger.info("Procurando stream de 720p")
         stream = yt.streams.filter(progressive=True, file_extension='mp4', res="720p").first()
         if not stream:
@@ -128,9 +130,8 @@ def download_using_pytube(url, video_id):
                     try:
                         quality = int(s.resolution.replace("p", ""))
                         quality_streams.append((quality, s))
-                    except:
+                    except Exception:
                         continue
-            # Ordenar por resolução em ordem decrescente
             quality_streams.sort(reverse=True, key=lambda x: x[0])
             stream = None
             for quality, s in quality_streams:
@@ -173,7 +174,7 @@ def get_video_info_rapidapi(url):
         api_url = "https://youtube-quick-video-downloader-free-api-downlaod-all-video.p.rapidapi.com/videodownload.php"
         querystring = {"url": url}
         headers = {
-            "X-RapidAPI-Key": os.getenv("RAPIDAPI_KEY", "e675e37fe3msh28737c9013eca79p1ed09cjsn7b8a4c446ef0"),
+            "X-RapidAPI-Key": os.getenv("RAPIDAPI_KEY", "sua_chave_aqui"),
             "X-RapidAPI-Host": "youtube-quick-video-downloader-free-api-downlaod-all-video.p.rapidapi.com"
         }
 
@@ -187,7 +188,6 @@ def get_video_info_rapidapi(url):
             logger.error(f"Erro ao decodificar JSON da RapidAPI: {str(e)}")
             raise Exception("Resposta da API não é um JSON válido")
         
-        # Verifica se a resposta tem o formato esperado (lista com pelo menos um item)
         if not isinstance(data, list) or len(data) == 0:
             raise Exception("Formato de resposta inválido")
         
@@ -207,7 +207,6 @@ def get_video_info_rapidapi(url):
         best_below_target_url = None
 
         for entry in urls:
-            # Considera apenas entradas com extensão e nome MP4
             if entry.get("extension") != "mp4" and entry.get("name") != "MP4":
                 continue
                 
@@ -303,7 +302,7 @@ def handle_download():
                 "title": title
             })
 
-        # Método primário: via RapidAPI
+        # MÉTODO 1: Usar RapidAPI
         try:
             logger.info("Tentando download com RapidAPI (Método primário)")
             video_info = get_video_info_rapidapi(url)
@@ -312,7 +311,6 @@ def handle_download():
                 title = video_info.get("title", f"Video {video_id}")
                 thumbnail_url = video_info.get("thumbnail_url")
                 
-                # Baixar thumbnail, se disponível
                 if thumbnail_url:
                     thumb_path = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
                     thumb_response = requests.get(thumbnail_url)
@@ -338,7 +336,7 @@ def handle_download():
         except Exception as e:
             logger.warning(f"Método RapidAPI falhou: {str(e)}")
         
-        # Método secundário: via pytube
+        # MÉTODO 2: Usar pytube
         try:
             logger.info("Tentando download com pytube (Método secundário)")
             success, result = download_using_pytube(url, video_id)
