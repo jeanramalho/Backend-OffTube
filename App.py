@@ -40,111 +40,68 @@ def extract_youtube_id(url):
     return match.group(1)
 
 def get_video_info_rapidapi(url):
-    """
-    Obtém informações do vídeo usando a API do RapidAPI que funcionou no exemplo
-    """
+    """Obtém informações do vídeo usando a API do RapidAPI"""
     try:
-        # Extrair ID do vídeo
         video_id = extract_youtube_id(url)
         if not video_id:
             raise Exception("URL do YouTube inválida")
-            
+
         logger.info(f"Obtendo informações para o vídeo com ID: {video_id}")
-        
-        # Construir a URL da API - usando o endpoint que funcionou no exemplo
+
         api_url = "https://youtube-quick-video-downloader-free-api-downlaod-all-video.p.rapidapi.com/videodownload.php"
-        
         querystring = {"url": url}
-        
         headers = {
             "X-RapidAPI-Key": os.getenv("RAPIDAPI_KEY", "e675e37fe3msh28737c9013eca79p1ed09cjsn7b8a4c446ef0"),
             "X-RapidAPI-Host": "youtube-quick-video-downloader-free-api-downlaod-all-video.p.rapidapi.com"
         }
-        
-        logger.info(f"Fazendo requisição para a API RapidAPI")
+
         response = requests.get(api_url, headers=headers, params=querystring)
-        
         if response.status_code != 200:
             logger.error(f"Erro na API: Status {response.status_code}, Resposta: {response.text}")
             raise Exception(f"Erro ao acessar a API: {response.status_code}")
-            
-        try:
-            data = response.json()
-            logger.info("Resposta da API recebida com sucesso")
-            logger.info(f"Dados da API: {json.dumps(data)[:500]}...")
-        except json.JSONDecodeError as e:
-            logger.error(f"Erro ao decodificar JSON: {str(e)}")
-            logger.error(f"Conteúdo recebido: {response.text[:500]}...")
-            raise Exception("Falha ao processar resposta da API")
+
+        data = response.json()
+
+        # A resposta é uma lista, pegamos o primeiro item
+        if not isinstance(data, list) or len(data) == 0:
+            raise Exception("Formato de resposta inválido (lista vazia ou não lista)")
         
-        # Processar dados do formato desta API específica
-        if not data or not isinstance(data, dict):
-            raise Exception("Formato de resposta inválido")
-            
-        # Esta API pode ter estrutura diferente - adaptando o parsing baseado no exemplo fornecido
-        title = data.get("title", f"video_{video_id}")
-        thumbnail_url = data.get("thumbnail", f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg")
-        
-        # Buscar o melhor link de download disponível
+        main_data = data[0]  # Acessar o primeiro item da lista
+
+        title = main_data.get("meta", {}).get("title", f"video_{video_id}")
+        thumbnail_url = main_data.get("pictureUrl", f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg")
+        urls = main_data.get("urls", [])
+
+        # Encontrar o melhor formato MP4 com áudio (evitar formatos apenas de áudio)
+        best_quality = 0
         download_url = None
-        formats = []
         
-        # Verificar diferentes campos que podem conter links
-        for key in ["mp4", "videos", "formats", "links"]:
-            if key in data and isinstance(data[key], (list, dict)):
-                formats = data[key]
-                break
-                
-        # Se formats for um dicionário (comum em algumas APIs)
-        if isinstance(formats, dict):
-            best_quality = 0
-            for quality, link in formats.items():
+        for entry in urls:
+            if entry.get("extension") == "mp4" and entry.get("audio", True):
                 try:
-                    # Tentar extrair o número da qualidade (ex: "720" de "720p")
-                    quality_val = int(re.search(r'(\d+)', quality).group(1))
-                    if quality_val > best_quality and isinstance(link, str) and link.startswith("http"):
-                        best_quality = quality_val
-                        download_url = link
-                except (AttributeError, ValueError):
-                    # Se não conseguir extrair a qualidade, só usar se não tiver outro
-                    if not download_url and isinstance(link, str) and link.startswith("http"):
-                        download_url = link
-        
-        # Se formats for uma lista (outro formato comum)
-        elif isinstance(formats, list):
-            best_quality = 0
-            for item in formats:
-                if isinstance(item, dict):
-                    quality = item.get("quality", "0")
-                    link = item.get("url", "")
+                    quality_str = entry.get("quality", "0")
+                    quality = int(re.sub(r'\D', '', quality_str))  # Extrai números da qualidade
                     
-                    try:
-                        quality_val = int(re.search(r'(\d+)', quality).group(1))
-                        if quality_val > best_quality and link.startswith("http"):
-                            best_quality = quality_val
-                            download_url = link
-                    except (AttributeError, ValueError):
-                        if not download_url and link.startswith("http"):
-                            download_url = link
-        
-        # Verificar se encontramos um URL válido
-        if not download_url:
-            # Verificar diretamente no objeto raiz se há um URL de download
-            for key in ["url", "download_url", "link", "video_url"]:
-                if key in data and isinstance(data[key], str) and data[key].startswith("http"):
-                    download_url = data[key]
-                    break
-        
+                    if quality > best_quality:
+                        best_quality = quality
+                        download_url = entry.get("url")
+                        
+                        # Corrigir URL relativa (se necessário)
+                        if download_url.startswith("/"):
+                            download_url = "https://youtube-quick-video-downloader-free-api-downlaod-all-video.p.rapidapi.com" + download_url
+                except:
+                    continue
+
         if not download_url:
             raise Exception("URL de download não encontrada na resposta")
-            
+
         return {
             'title': title,
             'thumbnail_url': thumbnail_url,
             'download_url': download_url,
             'video_id': video_id
         }
-        
+
     except Exception as e:
         logger.error(f"Erro ao obter informações do vídeo: {str(e)}")
         raise
