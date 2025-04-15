@@ -66,20 +66,6 @@ def upload_to_gcs(local_path, gcs_path):
         logger.error(f"Error uploading to GCS: {str(e)}")
         return False
 
-def download_from_gcs(gcs_path, local_path):
-    """Download a file from Google Cloud Storage."""
-    if not bucket:
-        logger.error("No GCS bucket available")
-        return False
-    try:
-        blob = bucket.blob(gcs_path)
-        blob.download_to_filename(local_path)
-        logger.info(f"Downloaded gs://{GCS_BUCKET_NAME}/{gcs_path} to {local_path}")
-        return True
-    except Exception as e:
-        logger.error(f"Error downloading from GCS: {str(e)}")
-        return False
-
 def get_gcs_signed_url(gcs_path, expires_in_seconds=3600):
     """Get a signed URL for a file in Google Cloud Storage."""
     if not bucket:
@@ -98,7 +84,7 @@ def get_gcs_signed_url(gcs_path, expires_in_seconds=3600):
         return None
 
 def download_with_ytdlp(url, video_id):
-    """Download video using yt-dlp CLI tool."""
+    """Download video using yt-dlp CLI tool with authentication."""
     logger.info(f"Starting download with yt-dlp: {url}")
     
     # Create temporary paths
@@ -109,12 +95,15 @@ def download_with_ytdlp(url, video_id):
     final_video_path = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.mp4")
     final_thumb_path = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
     
+    cookies_path = os.path.join(os.getcwd(), "cookies.txt")  # Path to cookies.txt
+    
     # Get video info first
     try:
         info_command = [
             "yt-dlp", 
             "--dump-json",
             "--no-playlist",
+            "--cookies", cookies_path,  # Use cookies for authentication
             url
         ]
         
@@ -136,6 +125,7 @@ def download_with_ytdlp(url, video_id):
             "--convert-thumbnails", "jpg",
             "--thumbnail-template", temp_thumb_path,
             "--no-playlist",
+            "--cookies", cookies_path,  # Use cookies for authentication
             url
         ]
         
@@ -172,6 +162,8 @@ def download_with_ytdlp(url, video_id):
     except Exception as e:
         logger.error(f"Error using yt-dlp: {str(e)}")
         return False, f"Error using yt-dlp: {str(e)}", None
+
+# Remaining endpoints unchanged...
 
 @app.route("/download", methods=["POST"])
 def handle_download():
