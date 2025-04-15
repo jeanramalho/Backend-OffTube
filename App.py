@@ -7,7 +7,7 @@ from flask_cors import CORS
 from pathlib import Path
 from dotenv import load_dotenv
 
-# Carrega variáveis de ambiente, se houver
+# Carregar variáveis de ambiente, se houver
 load_dotenv()
 
 # Configuração de logging
@@ -17,7 +17,7 @@ logger = logging.getLogger(__name__)
 app = Flask(__name__)
 CORS(app)
 
-# Pastas para armazenar vídeos e thumbnails
+# Diretórios para armazenar vídeos e thumbnails
 DOWNLOAD_FOLDER = "videos"
 THUMBNAIL_FOLDER = "thumbnails"
 Path(DOWNLOAD_FOLDER).mkdir(exist_ok=True)
@@ -34,7 +34,7 @@ def get_video_info_option1(url):
     Obtém informações do vídeo via RapidAPI Option1.
     Endpoint: youtube-quick-video-downloader-free-api-downlaod-all-video.p.rapidapi.com
     Retorna um dicionário com title, thumbnail_url, download_url, video_id e quality.
-    Prioriza qualidade 720p ou a melhor abaixo de 720.
+    Prioriza stream 720p ou a melhor abaixo.
     """
     api_url = "https://youtube-quick-video-downloader-free-api-downlaod-all-video.p.rapidapi.com/videodownload.php"
     headers = {
@@ -139,11 +139,11 @@ def get_video_info_option2(url):
         "quality": chosen_quality
     }
 
-def download_from_url(download_url, video_id, title):
+def download_from_url(download_url, video_id, title, referer_url):
     """
-    Faz o download do arquivo utilizando a URL obtida via RapidAPI.
-    Usa uma sessão com headers que simulam uma requisição de navegador, inclusive com "Range".
-    Salva o vídeo em <DOWNLOAD_FOLDER>/<video_id>.mp4 e baixa a thumbnail padrão.
+    Tenta baixar o arquivo utilizando a URL obtida via RapidAPI.
+    Utiliza uma sessão de requests com headers que simulam uma requisição real.
+    O header Referer é definido como a URL completa do vídeo do YouTube.
     """
     logger.info(f"Download iniciando (primeiros 100 caracteres): {download_url[:100]}...")
     video_path = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.mp4")
@@ -151,9 +151,11 @@ def download_from_url(download_url, video_id, title):
     session = requests.Session()
     session.headers.update({
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-        "Referer": "https://www.youtube.com/",
+        "Referer": referer_url,
         "Origin": "https://www.youtube.com",
         "Accept": "*/*",
+        "Sec-Fetch-Mode": "cors",
+        "Sec-Fetch-Dest": "video",
         "Range": "bytes=0-"
     })
     try:
@@ -165,7 +167,7 @@ def download_from_url(download_url, video_id, title):
                     f.write(chunk)
         if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
             logger.info(f"Download concluído (tamanho: {os.path.getsize(video_path)/1024/1024:.2f} MB)")
-            # Tenta baixar a thumbnail padrão do YouTube
+            # Tenta baixar a thumbnail padrão
             try:
                 thumb_resp = session.get(f"https://i.ytimg.com/vi/{video_id}/maxresdefault.jpg", timeout=30)
                 if thumb_resp.status_code != 200:
@@ -196,7 +198,7 @@ def handle_download():
         if not video_id:
             return jsonify({"error": "URL do YouTube inválida"}), 400
 
-        # Se o vídeo já existir no sistema, retorna os dados
+        # Se o vídeo já estiver salvo, retorna os dados
         video_path = os.path.join(DOWNLOAD_FOLDER, f"{video_id}.mp4")
         if os.path.exists(video_path) and os.path.getsize(video_path) > 0:
             try:
@@ -215,7 +217,7 @@ def handle_download():
                 "title": title
             })
 
-        # Tenta obter informações via Option1; se a qualidade não for 720p, tenta Option2
+        # Tenta obter as informações via Option1; se a qualidade for inferior a 720, tenta Option2 para ver se há melhor opção
         info = None
         try:
             logger.info("Tentando RapidAPI Option1...")
@@ -233,7 +235,7 @@ def handle_download():
                     info = info2
                     logger.info("Utilizando dados da Option2 (qualidade >= 720p).")
                 else:
-                    logger.info("Option2 também retornou qualidade inferior a 720p; mantendo Option1.")
+                    logger.info("Option2 também retornou qualidade inferior; mantendo Option1.")
             except Exception as e:
                 logger.warning(f"Option2 falhou: {str(e)}")
         if not info:
@@ -243,12 +245,14 @@ def handle_download():
         download_url = info.get("download_url")
         title = info.get("title", f"video_{video_id}")
         thumb_url = info.get("thumbnail_url")
-        success, result = download_from_url(download_url, video_id, title)
+        # Usa a URL completa do vídeo como Referer
+        referer_url = url
+        success, result = download_from_url(download_url, video_id, title, referer_url)
         if not success:
             logger.warning(f"Download via Option1/Option2 falhou: {result}")
             return jsonify({"error": "Download falhou", "details": result}), 500
 
-        # Tenta baixar a thumbnail informada pela API (caso exista) como fallback
+        # Tenta baixar a thumbnail informada pela API, se disponível, como fallback
         thumb_path = os.path.join(THUMBNAIL_FOLDER, f"{video_id}.jpg")
         try:
             if thumb_url:
